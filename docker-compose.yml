@@ -1,0 +1,105 @@
+services:
+  letta:
+    image: ghcr.io/qfunction-ai/letta-local:0.16.31
+    ports:
+      - "127.0.0.1:8284:8283"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434/v1
+      - LETTA_PG_URI=${LETTA_PG_URI:-postgresql://${POSTGRES_USER:-nabla}:${POSTGRES_PASSWORD}@postgres:5432/letta}
+      - GLOBAL_MAX_CONTEXT_WINDOW_LIMIT=${GLOBAL_MAX_CONTEXT_WINDOW_LIMIT:-32768}
+      # Canary exfiltration tripwire off: zero-tool supervisor, localhost-bound,
+      # single user — no injection surface; holdback taxes every chat response.
+      # Default is ON in the fork; this is a deliberate local-only opt-out.
+      - LETTA_CANARY_ENABLED=false
+    volumes:
+      - letta_data:/root/.letta
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8283/v1/health/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - nabla-backend
+      - nabla-db
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    ports:
+      - "127.0.0.1:5433:5432"
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER:-nabla}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      - POSTGRES_DB=letta
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres-init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nabla -d letta"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - nabla-db
+
+  nabla:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:8002:8000"
+    environment:
+      - NABLA_LETTA_BASE_URL=http://letta:8283
+      - NABLA_LLM_MODEL=${NABLA_LLM_MODEL:-ollama/gemma4:latest}
+      - NABLA_EMBEDDING_MODEL=${NABLA_EMBEDDING_MODEL:-embeddinggemma:latest}
+      - NABLA_DATA_DIR=/data
+      - NABLA_WEB_ENABLED=${NABLA_WEB_ENABLED:-1}
+      - NABLA_SETUP_TOKEN=${NABLA_SETUP_TOKEN:-}
+      - NABLA_DEV_MODE=${NABLA_DEV_MODE:-false}
+      - NABLA_SCHEDULE_ENABLED=${NABLA_SCHEDULE_ENABLED:-0}
+      - NABLA_SCHEDULE_INTERVAL=${NABLA_SCHEDULE_INTERVAL:-5}
+      - NABLA_SCHEDULE_LOG_TYPES=${NABLA_SCHEDULE_LOG_TYPES:-all}
+      - NABLA_SCHEDULE_LOG_COUNT=${NABLA_SCHEDULE_LOG_COUNT:-50}
+      - NABLA_SUMOLOGIC_HOST=${NABLA_SUMOLOGIC_HOST:-}
+      - NABLA_SUMOLOGIC_ACCESS_ID=${NABLA_SUMOLOGIC_ACCESS_ID:-}
+      - NABLA_SUMOLOGIC_ACCESS_KEY=${NABLA_SUMOLOGIC_ACCESS_KEY:-}
+      - NABLA_SUMOLOGIC_AUTH_QUERY=${NABLA_SUMOLOGIC_AUTH_QUERY:-}
+      - NABLA_SUMOLOGIC_ENDPOINT_QUERY=${NABLA_SUMOLOGIC_ENDPOINT_QUERY:-}
+    volumes:
+      - nabla_data:/data
+      - ./nabla:/app/nabla:ro
+    depends_on:
+      letta:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - nabla-backend
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - nabla
+    restart: unless-stopped
+    networks:
+      - nabla-backend
+
+volumes:
+  postgres_data:
+  letta_data:
+  nabla_data:
+
+networks:
+  # Letta and Nabla can talk to each other
+  nabla-backend:
+  # Letta and Postgres can talk to each other
+  nabla-db:

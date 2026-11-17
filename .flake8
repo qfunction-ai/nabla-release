@@ -1,0 +1,9 @@
+[flake8]
+max-line-length = 120
+ignore = W503,W504
+per-file-ignores =
+    nabla/agents/supervisor.py: E501
+    nabla/blocks.py: E501
+    nabla/tools/anomaly.py: E501
+    nabla/detection.py: E241
+    nabla/rl/thresholds.py: E241

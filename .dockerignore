@@ -1,0 +1,36 @@
+# Secrets
+.env
+.env.*
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist/
+build/
+.eggs/
+*.egg
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# IDE
+.vscode/
+.idea/
+
+# Docker data volumes
+data/
+
+# Documentation
+*.md
+!README.md
+
+# Docker compose overrides (dev-only)
+docker-compose.override.yml
