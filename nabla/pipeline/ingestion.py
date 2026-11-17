@@ -217,4 +217,14 @@ def run_ingestion(
                 log_type, ingest_result["count"], ingest_result["normal"], ingest_result["anomalous"],
             )
 
+    # Phase 2 (remediation plan): stable event_id on every ingested entry —
+    # correlation and the Phase 3 label pipeline reference events by ID.
+    import hashlib as _hashlib
+    for e in result.entries:
+        key_material = "|".join(str(e.get(k, "")) for k in (
+            "timestamp", "user", "host", "source_ip", "process", "action",
+            "event_code", "dest_ip",
+        ))
+        e["event_id"] = _hashlib.sha256(key_material.encode()).hexdigest()[:16]
+
     return result

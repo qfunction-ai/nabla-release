@@ -140,6 +140,7 @@ def _build_finding_evidence(
         "anomaly_count": len(matching),
         "anomalies": [
             {
+                "anomaly_id": a.get("anomaly_id", ""),
                 "method": a.get("detection_method", a.get("type", "")),
                 "severity": a.get("severity", "medium"),
                 "timestamp": a.get("timestamp", ""),
@@ -277,6 +278,14 @@ def save_incidents(
                 "supervisor_review": supervisor_text,
                 "description": _build_finding_description(finding),
                 "evidence": entity_evidence,
+                # Phase 2/3 (remediation plan): contributing anomaly IDs + the
+                # thresholds snapshot in effect at creation — the label
+                # pipeline keys dispositions against these.
+                "contributing_anomaly_ids": [
+                    a.get("anomaly_id", "")
+                    for a in (run_anomalies or [])
+                    if a.get("entity", a.get("user")) == entity
+                ][:20],
                 "operator_notes": "",
             }
             incidents.append(incident)

@@ -2087,4 +2087,40 @@ def detect_anomalies(
                 a["log_type"] = "unknown"
 
     logger.info("Detected %d anomalies across %d entries", len(anomalies), len(entries))
+
+    # Phase 2 (remediation plan): stable anomaly IDs on every anomaly
+    _stamp_anomaly_ids(anomalies)
+
     return anomalies, baselines
+
+
+def _stamp_anomaly_ids(anomalies: list[dict]) -> None:
+    """Phase 2: stable anomaly_id on every anomaly (deterministic hash).
+
+    Hash of (entity, detection_method, timestamp, evidence) — re-running
+    the same batch produces identical IDs, which risk retention (A6)
+    deduplicates on, correlation chains reference, and the Phase 3 label
+    pipeline keys dispositions against. Attached in ONE place rather than
+    at 32 construction sites; same-run collisions (same method+entity+ts
+    firing twice) get a discriminator suffix.
+    """
+    import hashlib
+
+    seen: dict[str, int] = {}
+    for a in anomalies:
+        entity = a.get("entity", a.get("user", a.get("host", "unknown")))
+        key_material = "|".join(str(x) for x in (
+            entity,
+            a.get("detection_method", a.get("type", "")),
+            a.get("timestamp", ""),
+            a.get("source_ip", ""),
+            str(a.get("details", ""))[:80],
+            a.get("process", ""),
+        ))
+        digest = hashlib.sha256(key_material.encode()).hexdigest()[:16]
+        if digest in seen:
+            seen[digest] += 1
+            digest = f"{digest}-{seen[digest]}"
+        else:
+            seen[digest] = 1
+        a["anomaly_id"] = digest
