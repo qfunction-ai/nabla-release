@@ -42,9 +42,9 @@ if TYPE_CHECKING:
 
 logger = get_logger("detection")
 
-# Default thresholds — derived from THRESHOLDS in rl/thresholds.py to avoid drift
-from nabla.rl.thresholds import THRESHOLDS as _RL_THRESHOLDS
-DEFAULT_THRESHOLDS = {name: default for name, (_, _, _, default) in _RL_THRESHOLDS.items()}
+# Default thresholds — derived from THRESHOLDS in rl/calibration.py (Phase 3)
+from nabla.rl.calibration import THRESHOLDS as _CAL_THRESHOLDS
+DEFAULT_THRESHOLDS = {name: default for name, (_, _, _, default) in _CAL_THRESHOLDS.items()}
 
 # Hardcoded LOLBIN signatures — fallback when lolbin_db block is empty
 FALLBACK_LOLBIN_SIGS = [
@@ -234,68 +234,6 @@ def _parse_ts(ts: str) -> datetime | None:
     from nabla.utils import parse_iso_timestamp
     return parse_iso_timestamp(ts)
 
-
-def parse_rl_thresholds(block_text: str) -> dict[str, float]:
-    """Parse the rl_thresholds block text into a dict.
-
-    Clamps values to reasonable ranges to prevent runaway threshold
-    escalation from a broken reward signal.
-
-    Args:
-        block_text: Text from the rl_thresholds shared block (key: value per line).
-
-    Returns:
-        Dict of threshold name -> float value, with defaults for missing keys.
-    """
-    thresholds = dict(DEFAULT_THRESHOLDS)
-    if not block_text:
-        return thresholds
-    for line in block_text.strip().split("\n"):
-        if ":" in line:
-            k, _, v = line.partition(":")
-            k, v = k.strip(), v.strip()
-            if k in DEFAULT_THRESHOLDS:
-                try:
-                    thresholds[k] = float(v)
-                except ValueError:
-                    pass  # silent by design: unparseable timestamp in log entry (2026-09 sweep)
-    # Clamp values to reasonable ranges
-    thresholds = _clamp_thresholds(thresholds)
-    return thresholds
-
-
-# Allowed ranges for each threshold — prevents runaway escalation
-_THRESHOLD_RANGES: dict[str, tuple[float, float]] = {
-    "z_score_sigma": (1.0, 5.0),
-    "brute_force_ratio": (0.1, 0.95),
-    "off_hours_count": (1, 50),
-    "multi_ip_count": (2, 20),
-    "spike_multiplier": (1.5, 10.0),
-    "lolbin_sensitivity": (0.1, 1.0),
-    "parent_child_sensitivity": (0.1, 1.0),
-    "critical_host_sensitivity": (0.1, 1.0),
-    "unusual_process_sensitivity": (0.1, 1.0),
-    "action_sequence_window_minutes": (5, 120),
-    "gcn_lof_alpha": (0.1, 0.9),
-    "gcn_lof_threshold": (0.3, 0.99),
-    "provenance_anomaly_density": (0.05, 0.8),
-    "provenance_min_community_size": (2, 20),
-    "temporal_chain_window_minutes": (5, 120),
-    "temporal_min_chain_length": (2, 10),
-    "suspicious_path_sensitivity": (0.1, 1.0),
-    "integrity_anomaly_sensitivity": (0.1, 1.0),
-    "registry_abuse_sensitivity": (0.1, 1.0),
-    "network_anomaly_sensitivity": (0.1, 1.0),
-    "ewma_sensitivity": (0.1, 1.0),
-    "cusum_sensitivity": (0.1, 1.0),
-    "enumeration_sensitivity": (0.1, 1.0),
-    "entity_event_count_sigma": (1.0, 5.0),
-    "entity_new_ip_threshold": (1, 20),
-    "entity_auth_failure_sigma": (1.0, 5.0),
-    "entity_new_process_threshold": (1, 20),
-    "entity_new_user_threshold": (1, 10),
-    "entity_behavior_composite_threshold": (0.1, 1.0),
-}
 
 
 def _clamp_thresholds(thresholds: dict[str, float]) -> dict[str, float]:
@@ -632,6 +570,7 @@ def detect_anomalies(
                             ),
                             "detection_method": "entity_z_score",
                             "z_score": round(entity_z, 2),
+                            "raw_score": round(entity_z, 3),
                             "entity_baseline": True,
                         })
                         continue  # Entity baseline handled it, skip batch check
@@ -689,6 +628,7 @@ def detect_anomalies(
                             ),
                             "detection_method": "entity_auth_failure",
                             "entity_baseline": True,
+                            "raw_score": round(auth_z, 3),
                         })
                         entity_flagged = True
             # Fall back to global threshold
@@ -705,6 +645,7 @@ def detect_anomalies(
                         f"({current_ratio:.0%}, threshold={bf_ratio})"
                     ),
                     "detection_method": "failed_login_ratio",
+                    "raw_score": round(current_ratio, 3),
                 })
 
     # --- 4. Off-hours activity ---

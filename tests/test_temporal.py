@@ -22,7 +22,7 @@ from nabla.temporal import (
     format_temporal_summary,
 )
 from nabla.rl.bandit import DETECTION_METHODS
-from nabla.rl.thresholds import THRESHOLDS
+from nabla.rl.calibration import THRESHOLDS
 from nabla.detection import DEFAULT_THRESHOLDS
 
 
@@ -527,16 +527,12 @@ class TestRLIntegration:
     def test_temporal_in_bandit_methods(self):
         assert "temporal_chain" in DETECTION_METHODS
 
-    def test_temporal_thresholds_in_block(self):
-        from nabla.blocks import SHARED_BLOCKS
-        rl_text = SHARED_BLOCKS["rl_thresholds"]
-        assert "temporal_chain_window_minutes" in rl_text
-        assert "temporal_min_chain_length" in rl_text
-
-    def test_temporal_in_reward_mapping(self):
-        from nabla.rl.reward import METHOD_TO_THRESHOLD
-        assert "temporal_chain" in METHOD_TO_THRESHOLD
-        assert METHOD_TO_THRESHOLD["temporal_chain"] == "temporal_chain_window_minutes"
+    def test_temporal_thresholds_in_calibration_store(self, tmp_path, monkeypatch):
+        from nabla.rl import calibration
+        monkeypatch.setattr(calibration, "calibration_store_path", lambda: tmp_path / "cal.json")
+        vals = calibration.effective_thresholds()
+        assert "temporal_chain_window_minutes" in vals
+        assert "temporal_min_chain_length" in vals
 
 
 # ---------------------------------------------------------------------------

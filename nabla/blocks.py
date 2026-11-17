@@ -11,7 +11,6 @@ SHARED_BLOCKS = {
     "ingestion_status": "Status: idle\nLast batch: none\nRecord count: 0\nErrors: none",
     "anomaly_queue": "Pending anomalies: none",
     "threat_findings": "Confirmed threats: none",
-    "rl_thresholds": "z_score_sigma: 2.0\nbrute_force_ratio: 0.5\noff_hours_count: 3\nmulti_ip_count: 3\nspike_multiplier: 3.0\nlolbin_sensitivity: 0.7\nparent_child_sensitivity: 0.7\ncritical_host_sensitivity: 0.7\nunusual_process_sensitivity: 0.5\naction_sequence_window_minutes: 30\ngcn_lof_alpha: 0.5\ngcn_lof_threshold: 0.75\nprovenance_anomaly_density: 0.3\nprovenance_min_community_size: 3\ntemporal_chain_window_minutes: 30\ntemporal_min_chain_length: 3",
     "graph_context": "Graph context: not yet analyzed",
     "attack_mapping": "ATT&CK mapping: not loaded",
     "lolbin_db": "LOLBIN database: not loaded",

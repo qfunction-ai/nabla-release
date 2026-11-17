@@ -87,9 +87,24 @@ def _write_minimal_state(temp_data_dir: str) -> None:
 
 @pytest.fixture
 def temp_data_dir():
-    """Create a temporary data directory for test state files."""
+    """Create a temporary data directory for test state files.
+
+    Also redirects the Phase 3 calibration/feedback store paths so tests
+    never touch the real /data (the stores derive paths from settings at
+    call time, so patch at the module level).
+    """
     with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+        from nabla.rl import calibration
+        from pathlib import Path as _P
+        orig_fb = calibration.feedback_store_path
+        orig_cal = calibration.calibration_store_path
+        calibration.feedback_store_path = lambda: _P(tmpdir) / "labels.jsonl"
+        calibration.calibration_store_path = lambda: _P(tmpdir) / "cal.json"
+        try:
+            yield tmpdir
+        finally:
+            calibration.feedback_store_path = orig_fb
+            calibration.calibration_store_path = orig_cal
 
 
 @pytest.fixture

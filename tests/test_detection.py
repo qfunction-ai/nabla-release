@@ -4,7 +4,6 @@ import os
 
 from nabla.detection import (
     detect_anomalies,
-    parse_rl_thresholds,
     parse_lolbin_block,
     format_anomaly_queue,
     compute_baselines,
@@ -13,42 +12,7 @@ from nabla.detection import (
 from nabla.utils import is_routable_ip
 
 
-# --- parse_rl_thresholds ---
-
-def test_parse_rl_thresholds_defaults():
-    """Empty block text returns all defaults."""
-    t = parse_rl_thresholds("")
-    assert t == DEFAULT_THRESHOLDS
-
-
-def test_parse_rl_thresholds_none():
-    """None block text returns all defaults."""
-    t = parse_rl_thresholds(None)
-    assert t == DEFAULT_THRESHOLDS
-
-
-def test_parse_rl_thresholds_custom():
-    """Custom values override defaults."""
-    text = "z_score_sigma: 3.5\nbrute_force_ratio: 0.7"
-    t = parse_rl_thresholds(text)
-    assert t["z_score_sigma"] == 3.5
-    assert t["brute_force_ratio"] == 0.7
-    # Others unchanged
-    assert t["off_hours_count"] == 3
-
-
-def test_parse_rl_thresholds_invalid_value():
-    """Invalid values are skipped, defaults used."""
-    text = "z_score_sigma: not_a_number"
-    t = parse_rl_thresholds(text)
-    assert t["z_score_sigma"] == 2.0  # default
-
-
-def test_parse_rl_thresholds_unknown_key():
-    """Unknown keys are ignored."""
-    text = "unknown_threshold: 999"
-    t = parse_rl_thresholds(text)
-    assert "unknown_threshold" not in t
+# --- parse_rl_thresholds tests retired with the parser (Phase 3) ---
 
 
 # --- parse_lolbin_block ---
@@ -753,7 +717,7 @@ def test_registry_abuse_critical_key():
     entries = [
         {"type": "endpoint", "process": "C:\\Intel\\Build\\LB3.exe",
          "action": "registry_set", "TargetObject": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WINEVT\\Channels\\test\\Enabled",
-         "user": "WIN-I41BETP\\Administrator", "timestamp": "2024-01-01T10:00:00Z"},
+         "user": "EC2AMAZ-I41BETP\\Administrator", "timestamp": "2024-01-01T10:00:00Z"},
     ]
     anomalies, _ = detect_anomalies(entries)
     ra_anomalies = [a for a in anomalies if a["detection_method"] == "registry_abuse"]
@@ -826,58 +790,6 @@ def test_network_anomaly_legitimate_not_flagged():
 
 # --- Threshold clamping ---
 
-def test_threshold_clamping_high():
-    """Thresholds above max are clamped down."""
-    text = "z_score_sigma: 100.0\nlolbin_sensitivity: 5.0"
-    t = parse_rl_thresholds(text)
-    assert t["z_score_sigma"] == 5.0
-    assert t["lolbin_sensitivity"] == 1.0
-
-
-def test_threshold_clamping_low():
-    """Thresholds below min are clamped up."""
-    text = "z_score_sigma: 0.01\nlolbin_sensitivity: -0.5"
-    t = parse_rl_thresholds(text)
-    assert t["z_score_sigma"] == 1.0
-    assert t["lolbin_sensitivity"] == 0.1
-
-
-def test_threshold_clamping_normal():
-    """Normal threshold values are not clamped."""
-    text = "z_score_sigma: 2.5\nlolbin_sensitivity: 0.7"
-    t = parse_rl_thresholds(text)
-    assert t["z_score_sigma"] == 2.5
-    assert t["lolbin_sensitivity"] == 0.7
-
-
-# --- EWMA detection ---
-
-def _make_ewma_entries(user: str, counts: list[int], base_hour: int = 10) -> list[dict]:
-    """Create endpoint entries with given event counts per 5-min bin.
-
-    Args:
-        user: Username.
-        counts: List of event counts per 5-min bin.
-        base_hour: Starting hour (default 10:00 UTC, within business hours).
-
-    Returns:
-        List of log entry dicts.
-    """
-    entries = []
-    for bin_idx, count in enumerate(counts):
-        minute = base_hour * 60 + bin_idx * 5
-        hour = minute // 60
-        mins = minute % 60
-        ts = f"2026-01-15T{hour:02d}:{mins:02d}:00.000Z"
-        for _ in range(count):
-            entries.append({
-                "user": user,
-                "action": "execute",
-                "process": "/bin/bash",
-                "type": "endpoint",
-                "timestamp": ts,
-            })
-    return entries
 
 
 def test_ewma_detects_gradual_drift():
@@ -938,6 +850,34 @@ def test_cusum_detects_sustained_shift():
     cusum = [a for a in anomalies if a["detection_method"] == "cusum"]
     assert len(cusum) >= 1, f"Expected CUSUM anomaly, got {[a['detection_method'] for a in anomalies]}"
     assert cusum[0]["user"] == "compromised"
+
+
+def _make_ewma_entries(user: str, counts: list[int], base_hour: int = 10) -> list[dict]:
+    """Create endpoint entries with given event counts per 5-min bin.
+
+    Args:
+        user: Username.
+        counts: List of event counts per 5-min bin.
+        base_hour: Starting hour (default 10:00 UTC, within business hours).
+
+    Returns:
+        List of log entry dicts.
+    """
+    entries = []
+    for bin_idx, count in enumerate(counts):
+        minute = base_hour * 60 + bin_idx * 5
+        hour = minute // 60
+        mins = minute % 60
+        ts = f"2026-01-15T{hour:02d}:{mins:02d}:00.000Z"
+        for _ in range(count):
+            entries.append({
+                "user": user,
+                "action": "execute",
+                "process": "/bin/bash",
+                "type": "endpoint",
+                "timestamp": ts,
+            })
+    return entries
 
 
 def test_cusum_no_alert_on_steady_rate():
@@ -1809,7 +1749,7 @@ class TestNewAccountGracePeriod:
     def test_new_account_skips_z_score(self):
         """New accounts should not trigger z-score detection."""
         # Create enough entries for a single user to be an outlier
-        entries = self._make_entries("helpdesk_user", 50)
+        entries = self._make_entries("helpdeskone", 50)
         # Add a few entries for other users to establish a baseline
         for i in range(5):
             entries.append({
@@ -1820,23 +1760,23 @@ class TestNewAccountGracePeriod:
                 "timestamp": "2026-01-15T10:00:00Z",
             })
 
-        # Without new_accounts — should flag helpdesk_user
+        # Without new_accounts — should flag helpdeskone
         anomalies_no_grace, _ = detect_anomalies(entries, new_accounts=None)
         z_score_no_grace = [a for a in anomalies_no_grace
                            if a.get("detection_method") in ("z_score", "entity_z_score")
-                           and a.get("user") == "helpdesk_user"]
+                           and a.get("user") == "helpdeskone"]
 
-        # With new_accounts — should NOT flag helpdesk_user
+        # With new_accounts — should NOT flag helpdeskone
         anomalies_with_grace, _ = detect_anomalies(
-            entries, new_accounts={"helpdesk_user"}
+            entries, new_accounts={"helpdeskone"}
         )
         z_score_with_grace = [a for a in anomalies_with_grace
                               if a.get("detection_method") in ("z_score", "entity_z_score")
-                              and a.get("user") == "helpdesk_user"]
+                              and a.get("user") == "helpdeskone"]
 
-        # helpdesk_user should be flagged without grace period
+        # helpdeskone should be flagged without grace period
         assert len(z_score_no_grace) >= 1
-        # helpdesk_user should NOT be flagged with grace period
+        # helpdeskone should NOT be flagged with grace period
         assert len(z_score_with_grace) == 0
 
     def test_new_account_skips_activity_spike(self):
@@ -1872,13 +1812,13 @@ class TestNewAccountGracePeriod:
         """New account grace period should NOT affect other detection methods."""
         entries = [{
             "type": "auth",
-            "user": "helpdesk_user",
+            "user": "helpdeskone",
             "source_ip": "8.8.8.8",
             "action": "login_failure",
             "timestamp": "2026-01-15T02:00:00Z",
         } for _ in range(10)]  # Off-hours + brute force
 
-        anomalies, _ = detect_anomalies(entries, new_accounts={"helpdesk_user"})
+        anomalies, _ = detect_anomalies(entries, new_accounts={"helpdeskone"})
         # off_hours and brute_force should still fire
         methods = {a.get("detection_method") for a in anomalies}
         assert "off_hours" in methods or "failed_login_ratio" in methods

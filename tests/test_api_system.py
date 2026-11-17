@@ -90,8 +90,7 @@ class TestRLState:
         data = resp.json()
         assert "thresholds" in data
         assert "effectiveness" in data
-        assert "total_threshold_updates" in data
-        assert "total_bandit_observations" in data
+        assert "feedback_labels" in data  # Phase 3: label count replaces Q-learning update counts
 
     def test_rl_state_thresholds_are_dict(self, app_client):
         """Thresholds is a dict."""

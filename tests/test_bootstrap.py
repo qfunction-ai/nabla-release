@@ -275,7 +275,6 @@ class TestBootstrap:
             "ingestion_status": "b-1",
             "threat_findings": "b-2",
             "anomaly_queue": "b-3",
-            "rl_thresholds": "b-4",
             "lolbin_db": "b-5",
             "graph_context": "b-6",
             "attack_mapping": "b-7",
@@ -286,10 +285,10 @@ class TestBootstrap:
 
         run_bootstrap(mock_client)
 
-        # The supervisor should receive all 9 blocks
+        # The supervisor receives all 8 blocks (rl_thresholds retired, Phase 3)
         calls = mock_client.agents.create.call_args_list
-        supervisor_calls = [c for c in calls if len(c[1].get("block_ids", [])) == 9]
-        assert len(supervisor_calls) >= 1, "Supervisor should receive all 9 blocks"
+        supervisor_calls = [c for c in calls if len(c[1].get("block_ids", [])) == 8]
+        assert len(supervisor_calls) >= 1, "Supervisor should receive all 8 blocks"
 
 
 # ── teardown ──

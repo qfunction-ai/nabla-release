@@ -413,43 +413,55 @@ def check_ollama():
         typer.echo("  Set NABLA_LETTA_COMPACTION_MODEL to enable this workaround")
 
 
-@app.command(name="rl-status")
-def rl_status():
-    """Show RL adaptive threshold state and detection method effectiveness."""
-    from nabla.rl.thresholds import ThresholdAgent, THRESHOLDS
+@app.command(name="calibration-status")
+def calibration_status():
+    """Show threshold calibration state (Phase 3: label-driven)."""
+    from nabla.rl.calibration import load_calibration, THRESHOLDS, current_labels
     from nabla.rl.bandit import DetectionMethodBandit
 
     settings = get_settings()
-
-    # Load threshold agent
-    agent = ThresholdAgent.load(settings.rl_state_file)
+    store = load_calibration()
     bandit = DetectionMethodBandit.load(settings.rl_state_file)
 
-    typer.echo("=== RL Adaptive Thresholds ===\n")
-
-    # Current values vs defaults
-    typer.echo("Threshold values (current → default):")
-    for name, (lo, hi, step, default) in THRESHOLDS.items():
-        current = agent.current_values.get(name, default)
-        updates = agent.update_counts.get(name, 0)
+    typer.echo("=== Threshold Calibration (label-driven) ===\n")
+    typer.echo("Threshold values (current vs default):")
+    for name in THRESHOLDS:
+        entry = store.get(name, {})
+        current = entry.get("current")
+        default = entry.get("default")
+        pinned = " [PINNED]" if entry.get("pinned") else ""
         changed = " (changed)" if current != default else ""
-        typer.echo(f"  {name}: {current} → {default}{changed}  [{updates} updates]")
+        typer.echo(f"  {name}: {current} (default {default}){changed}{pinned}")
 
-    # Bandit effectiveness
-    typer.echo("\n=== Detection Method Effectiveness ===\n")
+    labels = current_labels()
+    typer.echo(f"\nFeedback labels: {len(labels)} (current, non-superseded)")
+
+    typer.echo("\n=== Detection Method Effectiveness (bandit) ===\n")
     means = bandit.get_means()
     for method in sorted(means, key=means.get, reverse=True):
         alpha = bandit.alpha[method]
         beta = bandit.beta[method]
-        updates = bandit.update_counts[method]
         bar = "█" * int(means[method] * 20)
-        typer.echo(f"  {method:20s} {means[method]:.2f} {bar}  (α={alpha:.0f} β={beta:.0f}, {updates} obs)")
+        typer.echo(f"  {method:20s} {means[method]:.2f} {bar}  (α={alpha:.0f} β={beta:.0f})")
 
-    total_updates = sum(agent.update_counts.values())
-    total_bandit_obs = sum(bandit.update_counts.values())
-    typer.echo(f"\nTotal threshold updates: {total_updates}")
-    typer.echo(f"Total bandit observations: {total_bandit_obs}")
-    typer.echo(f"State file: {settings.rl_state_file}")
+    typer.echo(f"\nCalibration store: {settings.data_dir}/feedback/calibration.json")
+
+
+@app.command(name="calibrate")
+def calibrate_cmd():
+    """Run threshold calibration from current analyst dispositions."""
+    from nabla.rl.calibration import run_calibration
+
+    report = run_calibration()
+    typer.echo("=== Calibration Report ===")
+    for name, r in sorted(report.items()):
+        status = r.get("status", "?")
+        if status == "moved":
+            typer.echo(f"  {name}: {r['from']} → {r['to']}  ({r.get('reason', '')})")
+        elif status == "pinned_by_operator":
+            typer.echo(f"  {name}: pinned by operator at {r.get('current')}")
+        else:
+            typer.echo(f"  {name}: {status} (current {r.get('current')}) — {r.get('reason', '')}")
 
 
 # --- Watchlist subcommands ---

@@ -230,7 +230,7 @@ class TestStagingPattern:
 
 class TestDetectExfiltration:
     def test_empty_entries(self):
-        anomalies = detect_exfiltration(entries=[])
+        anomalies = detect_exfiltration(entries=[], thresholds={})
         assert anomalies == []
 
     def test_combines_all_sub_detectors(self):
@@ -263,7 +263,7 @@ class TestDetectExfiltration:
                 "timestamp": (base_time + timedelta(minutes=10)).isoformat(),
             },
         ]
-        anomalies = detect_exfiltration(entries)
+        anomalies = detect_exfiltration(entries, thresholds={})
         # Should have at least DNS tunneling + staging
         methods = {a["detection_method"] for a in anomalies}
         assert "dns_tunneling" in methods or "exfil_staging" in methods

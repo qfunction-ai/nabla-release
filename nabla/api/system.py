@@ -118,32 +118,35 @@ async def health_check(_auth: None = Depends(require_user)):
 
 @router.get("/rl")
 async def get_rl_state(_auth: None = Depends(require_user)):
-    """Get RL adaptive threshold state and detection method effectiveness.
+    """Get threshold calibration state and detection method effectiveness.
+
+    Phase 3: thresholds come from the calibration store (label-driven);
+    the bandit survives unchanged.
 
     Returns:
-        Dict with current thresholds, update counts, and bandit effectiveness.
+        Dict with current thresholds (current/default/pinned/evidence),
+        label counts, and bandit effectiveness.
     """
     from nabla.config import get_settings
-    from nabla.rl.thresholds import ThresholdAgent, THRESHOLDS
+    from nabla.rl.calibration import load_calibration, THRESHOLDS, current_labels
     from nabla.rl.bandit import DetectionMethodBandit
 
     settings = get_settings()
 
-    agent = ThresholdAgent.load(settings.rl_state_file)
+    store = load_calibration()
     bandit = DetectionMethodBandit.load(settings.rl_state_file)
 
-    # Current threshold values with defaults
     thresholds = {}
     for name, (lo, hi, step, default) in THRESHOLDS.items():
-        current = agent.current_values.get(name, default)
+        entry = store.get(name, {})
         thresholds[name] = {
-            "current": current,
+            "current": entry.get("current", default),
             "default": default,
-            "changed": current != default,
-            "updates": agent.update_counts.get(name, 0),
+            "changed": entry.get("current", default) != default,
+            "pinned": bool(entry.get("pinned")),
+            "evidence": entry.get("evidence"),
         }
 
-    # Bandit effectiveness
     means = bandit.get_means()
     effectiveness = {}
     for method in sorted(means, key=means.get, reverse=True):
@@ -151,14 +154,12 @@ async def get_rl_state(_auth: None = Depends(require_user)):
             "mean": round(means[method], 3),
             "alpha": bandit.alpha.get(method, 1.0),
             "beta": bandit.beta.get(method, 1.0),
-            "observations": bandit.update_counts.get(method, 0),
         }
 
     return {
         "thresholds": thresholds,
         "effectiveness": effectiveness,
-        "total_threshold_updates": sum(agent.update_counts.values()),
-        "total_bandit_observations": sum(bandit.update_counts.values()),
+        "feedback_labels": len(current_labels()),
     }
 
 

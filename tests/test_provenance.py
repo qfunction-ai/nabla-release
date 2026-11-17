@@ -586,9 +586,9 @@ class TestRLIntegration:
         assert "provenance_anomaly_density" in DEFAULT_THRESHOLDS
         assert "provenance_min_community_size" in DEFAULT_THRESHOLDS
 
-    def test_provenance_thresholds_in_rl(self):
-        """Provenance thresholds should be in RL THRESHOLDS."""
-        from nabla.rl.thresholds import THRESHOLDS
+    def test_provenance_thresholds_in_calibration(self):
+        """Provenance thresholds should be in the calibration THRESHOLDS."""
+        from nabla.rl.calibration import THRESHOLDS
         assert "provenance_anomaly_density" in THRESHOLDS
         assert "provenance_min_community_size" in THRESHOLDS
 
@@ -597,20 +597,13 @@ class TestRLIntegration:
         from nabla.rl.bandit import DETECTION_METHODS
         assert "provenance_community" in DETECTION_METHODS
 
-    def test_provenance_thresholds_in_block(self):
-        """Provenance thresholds should be in the rl_thresholds shared block."""
-        from nabla.blocks import SHARED_BLOCKS
-        block_text = SHARED_BLOCKS["rl_thresholds"]
-        assert "provenance_anomaly_density" in block_text
-        assert "provenance_min_community_size" in block_text
-
-    def test_parse_rl_thresholds_includes_provenance(self):
-        """parse_rl_thresholds should parse provenance thresholds."""
-        from nabla.detection import parse_rl_thresholds
-        text = "provenance_anomaly_density: 0.4\nprovenance_min_community_size: 5"
-        result = parse_rl_thresholds(text)
-        assert result["provenance_anomaly_density"] == 0.4
-        assert result["provenance_min_community_size"] == 5.0
+    def test_provenance_thresholds_in_calibration_store(self, tmp_path, monkeypatch):
+        """Provenance thresholds should be in the calibration store defaults."""
+        from nabla.rl import calibration
+        monkeypatch.setattr(calibration, "calibration_store_path", lambda: tmp_path / "cal.json")
+        vals = calibration.effective_thresholds()
+        assert "provenance_anomaly_density" in vals
+        assert "provenance_min_community_size" in vals
 
 
 # ---------------------------------------------------------------------------

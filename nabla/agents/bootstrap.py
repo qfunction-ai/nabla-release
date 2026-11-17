@@ -69,7 +69,6 @@ def bootstrap(client: Letta | None = None) -> dict[str, str]:
         block_ids["ingestion_status"],
         block_ids["threat_findings"],
         block_ids["anomaly_queue"],
-        block_ids["rl_thresholds"],
         block_ids["lolbin_db"],
         block_ids["graph_context"],
         block_ids["attack_mapping"],

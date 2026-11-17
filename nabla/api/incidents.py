@@ -21,12 +21,14 @@ class IncidentUpdateRequest(BaseModel):
         notes: Operator notes to append.
     """
     status: Literal["new", "investigating", "resolved", "false_positive"] | None = None
+    disposition: Literal["true_positive", "benign_true_positive", "false_positive"] | None = None
     notes: str | None = None
 
 
 @router.get("")
 async def list_incidents(
     status: Literal["new", "investigating", "resolved", "false_positive"] | None = None,
+    disposition: Literal["true_positive", "benign_true_positive", "false_positive"] | None = None,
     severity: Literal["low", "medium", "high", "critical"] | None = None,
     entity: str | None = None,
     run_id: str | None = None,
@@ -132,7 +134,8 @@ async def update_incident(
     from nabla.incidents import update_incident as _update
 
     try:
-        result = _update(incident_id, status=request.status, notes=request.notes)
+        result = _update(incident_id, status=request.status, notes=request.notes,
+                         disposition=request.disposition)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

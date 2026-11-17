@@ -523,8 +523,11 @@ def compute_risk_scores(
         # trickle of low-grade anomalies must build risk; that is the core
         # UEBA promise). Dedup by (method, timestamp); decay recomputed each
         # run against the data clock; negligible contributions pruned.
-        retained: dict[tuple, dict] = {
-            (a.get("method"), a.get("timestamp")): a
+        # Phase 3: dedup key upgrades to anomaly_id (stable, Phase 2) —
+        # identical re-fired anomalies collapse to one contribution; entries
+        # without an ID (pre-Phase-3 stores) fall back to (method, timestamp).
+        retained: dict[object, dict] = {
+            (a.get("anomaly_id") or (a.get("method"), a.get("timestamp"))): a
             for a in score.contributing_anomalies
         }
 
@@ -573,6 +576,7 @@ def compute_risk_scores(
 
             # Track contributing anomaly (condensed)
             condensed = {
+                "anomaly_id": anomaly.get("anomaly_id", ""),
                 "method": method,
                 "severity": severity,
                 "timestamp": anomaly_time,
@@ -580,7 +584,7 @@ def compute_risk_scores(
                 "categories": categories,
             }
             all_contributing.append(condensed)
-            retained[(method, anomaly_time)] = condensed
+            retained[condensed.get("anomaly_id") or (method, anomaly_time)] = condensed
 
         # Recompute categories from ALL retained anomalies (old + new),
         # decaying each against the data clock

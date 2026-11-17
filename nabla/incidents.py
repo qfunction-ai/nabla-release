@@ -286,6 +286,19 @@ def save_incidents(
                     for a in (run_anomalies or [])
                     if a.get("entity", a.get("user")) == entity
                 ][:20],
+                # Phase 3: creation-time snapshot — the label pipeline needs
+                # each anomaly's method, raw score, and the threshold that
+                # was in effect when it fired (not reconstructable later).
+                "contributing_anomaly_details": [
+                    {
+                        "anomaly_id": a.get("anomaly_id", ""),
+                        "method": a.get("detection_method", a.get("type", "")),
+                        "raw_score": a.get("raw_score"),
+                        "threshold_in_effect": _threshold_in_effect_for(a),
+                    }
+                    for a in (run_anomalies or [])
+                    if a.get("entity", a.get("user")) == entity
+                ][:20],
                 "operator_notes": "",
             }
             incidents.append(incident)
@@ -348,13 +361,17 @@ def update_incident(
     incident_id: str,
     status: str | None = None,
     notes: str | None = None,
+    disposition: str | None = None,
 ) -> dict[str, Any] | None:
-    """Update an incident's status and/or operator notes.
+    """Update an incident's status, notes, and/or disposition label.
 
     Args:
         incident_id: UUID of the incident.
         status: New status (must be in VALID_STATUSES).
         notes: Operator notes to append (newline-separated from existing).
+        disposition: Calibration label — true_positive, benign_true_positive,
+            or false_positive (Phase 3). Writes feedback records per
+            contributing anomaly (keyed anomaly_id, last-wins).
 
     Returns:
         Updated incident dict, or None if not found.
@@ -366,6 +383,8 @@ def update_incident(
 
     if status and status not in VALID_STATUSES:
         raise ValueError(f"Invalid status '{status}'. Must be one of: {', '.join(sorted(VALID_STATUSES))}")
+    if disposition and disposition not in VALID_DISPOSITIONS:
+        raise ValueError(f"Invalid disposition '{disposition}'. Must be one of: {', '.join(sorted(VALID_DISPOSITIONS))}")
 
     path = _incidents_file()
     if path is None:
@@ -386,6 +405,12 @@ def update_incident(
         found["updated_at"] = now
         if status:
             found["status"] = status
+            # Compat mapping ONLY where the status string literally names
+            # the label (review STRONG 1). resolved sets NO disposition.
+            if status == "false_positive" and not found.get("disposition"):
+                _apply_disposition(found, "false_positive", now)
+        if disposition:
+            _apply_disposition(found, disposition, now)
         if notes is not None:
             existing = found.get("operator_notes", "")
             if existing:
@@ -395,6 +420,52 @@ def update_incident(
 
         _save_incidents(path, incidents)
         return found
+
+
+VALID_DISPOSITIONS = {"true_positive", "benign_true_positive", "false_positive"}
+
+
+def _threshold_in_effect_for(anomaly: dict) -> float | None:
+    """The calibrated value of the anomaly's method's threshold at fire time."""
+    try:
+        from nabla.rl.calibration import METHOD_TO_THRESHOLD, effective_thresholds
+        tname = METHOD_TO_THRESHOLD.get(anomaly.get("detection_method", ""))
+        if not tname:
+            return None
+        return effective_thresholds().get(tname)
+    except Exception:
+        return None
+
+
+def _apply_disposition(incident: dict, disposition: str, now: str) -> None:
+    """Set the label and emit feedback records per contributing anomaly
+    (Phase 3): keyed anomaly_id, creation-time score/threshold snapshot,
+    written to the feedback store (last-wins)."""
+    incident["disposition"] = disposition
+    incident["disposition_at"] = now
+
+    from nabla.rl.calibration import write_labels
+    snapshot = incident.get("contributing_anomaly_details") or []
+    by_id = {a.get("anomaly_id"): a for a in snapshot if isinstance(a, dict)}
+    records = []
+    for aid in incident.get("contributing_anomaly_ids", []):
+        if not aid:
+            continue
+        detail = by_id.get(aid, {})
+        records.append({
+            "anomaly_id": aid,
+            "entity": incident.get("entity", ""),
+            "detection_method": detail.get("method", ""),
+            "raw_score": detail.get("raw_score"),
+            "threshold_in_effect": detail.get("threshold_in_effect"),
+            "disposition": disposition,
+            "disposition_at": now,
+            "incident_id": incident.get("incident_id", ""),
+            "run_id": incident.get("run_id", ""),
+            "supervisor_hint": None,
+        })
+    if records:
+        write_labels(records)
 
 
 def incident_stats() -> dict[str, Any]:

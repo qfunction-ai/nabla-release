@@ -518,8 +518,8 @@ def detect_exfiltration(
         List of anomaly dicts with type "data_exfiltration".
     """
     if thresholds is None:
-        from nabla.rl.thresholds import THRESHOLDS
-        thresholds = THRESHOLDS
+        from nabla.rl.calibration import effective_thresholds
+        thresholds = effective_thresholds()  # Phase 3: calibration store over defaults
 
     sigma = thresholds.get("exfil_volume_sigma", 3.0)
     window = thresholds.get("exfil_staging_window_minutes", 30)

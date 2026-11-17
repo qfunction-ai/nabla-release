@@ -6,16 +6,14 @@ from nabla.blocks import SHARED_BLOCKS, find_shared_blocks, get_or_create_shared
 
 
 def test_shared_blocks_defined():
-    """All expected shared blocks should be defined."""
-    expected_labels = {"ingestion_status", "anomaly_queue", "threat_findings", "rl_thresholds", "attack_mapping", "lolbin_db", "graph_context", "environment_context", "system_phase"}
+    """All expected shared blocks should be defined (rl_thresholds retired, Phase 3)."""
+    expected_labels = {"ingestion_status", "anomaly_queue", "threat_findings", "attack_mapping", "lolbin_db", "graph_context", "environment_context", "system_phase"}
     assert set(SHARED_BLOCKS.keys()) == expected_labels
 
 
-def test_rl_thresholds_includes_lolbin():
-    """The rl_thresholds block should include lolbin_sensitivity."""
-    text = SHARED_BLOCKS["rl_thresholds"]
-    assert "lolbin_sensitivity" in text
-    assert "0.7" in text
+def test_rl_thresholds_block_retired():
+    """The rl_thresholds block is retired — calibration.json replaced it."""
+    assert "rl_thresholds" not in SHARED_BLOCKS
 
 
 def test_attack_mapping_block_exists():

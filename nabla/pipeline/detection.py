@@ -78,16 +78,19 @@ def run_detection(
     logger.info("Anomaly Detection: analyzing %d log entries...", len(all_entries))
 
     from nabla.detection import (
-        detect_anomalies, parse_rl_thresholds, parse_lolbin_block,
+        detect_anomalies, parse_lolbin_block,
         format_anomaly_queue,
     )
 
-    # Read RL thresholds from shared block
-    blocks = _read_supervisor_blocks(client, agents["supervisor"], "rl_thresholds", "lolbin_db")
-    rl_thresholds_text = blocks["rl_thresholds"]
-    lolbin_db_text = blocks["lolbin_db"]
+    # Thresholds from the CALIBRATION STORE (Phase 3 closed loop): the
+    # calibrated currents layered over THRESHOLDS defaults. The Letta
+    # rl_thresholds block read retired with the Q-learning that wrote it.
+    from nabla.rl.calibration import effective_thresholds, THRESHOLDS as _CAL_META
+    thresholds = {name: meta[3] for name, meta in _CAL_META.items()}
+    thresholds.update(effective_thresholds())
 
-    thresholds = parse_rl_thresholds(rl_thresholds_text)
+    blocks = _read_supervisor_blocks(client, agents["supervisor"], "lolbin_db")
+    lolbin_db_text = blocks["lolbin_db"]
     lolbin_sigs = parse_lolbin_block(lolbin_db_text)
 
     # Read historical baseline for unusual-process detection

@@ -480,29 +480,31 @@ class TestRLStatus:
     """Tests for the rl-status command."""
 
     @patch("nabla.cli.get_settings")
-    @patch("nabla.rl.thresholds.ThresholdAgent.load")
+    @patch("nabla.rl.calibration.load_calibration")
+    @patch("nabla.rl.calibration.current_labels")
     @patch("nabla.rl.bandit.DetectionMethodBandit.load")
-    def test_rl_status(self, mock_bandit_load, mock_agent_load, mock_get_settings):
-        """RL status prints threshold and bandit info."""
+    def test_calibration_status(self, mock_bandit_load, mock_labels, mock_load_cal, mock_get_settings):
+        """Calibration status prints threshold and bandit info (Phase 3)."""
         mock_settings = MagicMock()
         mock_settings.rl_state_file = "/tmp/rl_state.json"
+        mock_settings.data_dir = "/tmp"
         mock_get_settings.return_value = mock_settings
 
-        mock_agent = MagicMock()
-        mock_agent.current_values = {"z_score_spike": 3.5}
-        mock_agent.update_counts = {"z_score_spike": 5}
-        mock_agent_load.return_value = mock_agent
+        mock_load_cal.return_value = {
+            "z_score_sigma": {"current": 2.5, "default": 2.0, "pinned": False},
+        }
+        mock_labels.return_value = [{"anomaly_id": "x", "disposition": "false_positive"}]
 
         mock_bandit = MagicMock()
         mock_bandit.get_means.return_value = {"lolbin_abuse": 0.8, "z_score_spike": 0.3}
         mock_bandit.alpha = {"lolbin_abuse": 8, "z_score_spike": 3}
         mock_bandit.beta = {"lolbin_abuse": 2, "z_score_spike": 7}
-        mock_bandit.update_counts = {"lolbin_abuse": 10, "z_score_spike": 10}
         mock_bandit_load.return_value = mock_bandit
 
-        result = runner.invoke(app, ["rl-status"])
+        result = runner.invoke(app, ["calibration-status"])
         assert result.exit_code == 0
-        assert "z_score_spike" in result.output
+        assert "z_score_sigma" in result.output
+        assert "Feedback labels: 1" in result.output
 
 
 # ---------------------------------------------------------------------------
