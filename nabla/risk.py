@@ -244,17 +244,60 @@ def _hours_since(timestamp: str) -> float:
     return max(0, elapsed)
 
 
-def _decay_factor(timestamp: str, half_life_hours: float) -> float:
+def _data_clock() -> datetime:
+    """The risk-computation reference clock (A7 remediation).
+
+    Decay, last_updated stamping, and trend math all run against the NEWEST
+    INGESTED EVENT timestamp (data time), not the wall clock — replaying
+    historical data keeps relative timing intact instead of zeroing scores
+    (live ingestion tracks the wall clock closely, so behavior there is
+    unchanged). Falls back to the wall clock when no data has been ingested
+    (or the persisted value is unparseable), and says so here in code.
+    """
+    try:
+        from nabla.config import get_settings
+        state_path = get_settings().system_state_file
+        if os.path.exists(state_path):
+            import json as _json
+            state = _json.load(open(state_path))
+            newest = state.get("data_newest_ts")
+            if newest:
+                from nabla.utils import parse_iso_timestamp
+                dt = parse_iso_timestamp(str(newest))
+                if dt is not None:
+                    return dt
+    except Exception as e:
+        logger.warning("data clock fallback to wall clock: %s", e)
+    return datetime.now(timezone.utc)
+
+
+def _hours_since_ref(timestamp: str, ref: datetime) -> float:
+    """Hours from an ISO timestamp to a reference instant (data clock).
+
+    Unparseable timestamps are 'time unknown': treated as occurring AT the
+    reference (zero age) with a warning — not silently maximum-age, which
+    zeroed their contribution (external review A7).
+    """
+    from nabla.utils import parse_iso_timestamp
+    dt = parse_iso_timestamp(timestamp)
+    if dt is None:
+        logger.warning("unparseable anomaly timestamp %r — treating as reference-time", timestamp)
+        return 0.0
+    return max(0.0, (ref - dt).total_seconds() / 3600)
+
+
+def _decay_factor(timestamp: str, half_life_hours: float, ref: datetime | None = None) -> float:
     """Compute exponential decay factor for an anomaly.
 
     Args:
         timestamp: ISO timestamp of the anomaly.
         half_life_hours: Decay half-life in hours.
+        ref: Reference instant (data clock). None = wall clock (legacy).
 
     Returns:
         Decay factor between 0 and 1.
     """
-    hours = _hours_since(timestamp)
+    hours = _hours_since_ref(timestamp, ref) if ref is not None else _hours_since(timestamp)
     return 0.5 ** (hours / half_life_hours)
 
 
@@ -269,21 +312,13 @@ def _get_bandit_weights(bandit_store=None) -> dict[str, float]:
     if bandit_store is None:
         return {}
 
-    try:
-        from nabla.rl.bandit import DetectionMethodBandit
-        weights = {}
-        for method_name, arm in bandit_store.arms.items():
-            # Confirmation rate: α / (α + β)
-            # Higher confirmation = more reliable method = boost
-            # Lower confirmation = noisier method = dampen
-            alpha = arm.get("alpha", 1.0)
-            beta = arm.get("beta", 1.0)
-            confirmation_rate = alpha / (alpha + beta) if (alpha + beta) > 0 else 0.5
-            # Map [0, 1] → [0.5, 1.5]: 0.5 confirmation → 1.0, 1.0 → 1.5, 0.0 → 0.5
-            weights[method_name] = 0.5 + confirmation_rate
-        return weights
-    except Exception:
-        return {}
+    # A5 remediation: the previous body iterated bandit_store.arms — an
+    # attribute DetectionMethodBandit never had (alpha/beta dicts instead).
+    # The AttributeError was swallowed by the blanket except, making the
+    # advertised Bayesian adjustment silently inert (external review A5).
+    # Use the class's own API; no blanket handler — failures surface now.
+    # Map [0,1] → [0.5,1.5]: 0.5 confirmation → 1.0, 1.0 → 1.5, 0.0 → 0.5.
+    return {method: 0.5 + rate for method, rate in bandit_store.get_means().items()}
 
 
 def _chain_multiplier(anomaly: dict, temporal_chains: list[dict]) -> float:
@@ -465,7 +500,12 @@ def compute_risk_scores(
         if entity:
             entity_anomalies[entity].append(anomaly)
 
-    now = datetime.now(timezone.utc).isoformat()
+    # A7: the entire risk computation runs on the DATA clock (newest ingested
+    # event), not the wall clock — decay, stamps, and trend all share one
+    # reference so replayed data keeps relative timing (review REQUIRED 1:
+    # all four consumers, or mixed-clock artifacts reintroduce the bug).
+    ref_clock = _data_clock()
+    now = ref_clock.isoformat()
 
     for entity_id, entity_anoms in entity_anomalies.items():
         etype = entity_type_map.get(entity_id, "user")
@@ -477,6 +517,16 @@ def compute_risk_scores(
         # Reset category scores (we recompute from all contributing anomalies)
         new_categories: dict[str, float] = dict.fromkeys(THREAT_CATEGORIES, 0.0)
         all_contributing: list[dict] = []
+
+        # A6: RETAINED anomalies from previous runs — the score accumulates
+        # across runs instead of resetting (external review A6: a steady
+        # trickle of low-grade anomalies must build risk; that is the core
+        # UEBA promise). Dedup by (method, timestamp); decay recomputed each
+        # run against the data clock; negligible contributions pruned.
+        retained: dict[tuple, dict] = {
+            (a.get("method"), a.get("timestamp")): a
+            for a in score.contributing_anomalies
+        }
 
         for anomaly in entity_anoms:
             # --- Base weight from severity ---
@@ -492,7 +542,7 @@ def compute_risk_scores(
 
             # --- Time decay ---
             anomaly_time = anomaly.get("timestamp", anomaly.get("detected_at", ""))
-            decay = _decay_factor(anomaly_time, half_life_hours) if anomaly_time else 1.0
+            decay = _decay_factor(anomaly_time, half_life_hours, ref=ref_clock) if anomaly_time else 1.0
 
             # --- Chain multiplier ---
             chain_mult = _chain_multiplier(anomaly, temporal_chains)
@@ -522,13 +572,30 @@ def compute_risk_scores(
                     new_categories[cat] += per_category
 
             # Track contributing anomaly (condensed)
-            all_contributing.append({
+            condensed = {
                 "method": method,
                 "severity": severity,
                 "timestamp": anomaly_time,
                 "contribution": round(contribution, 3),
                 "categories": categories,
-            })
+            }
+            all_contributing.append(condensed)
+            retained[(method, anomaly_time)] = condensed
+
+        # Recompute categories from ALL retained anomalies (old + new),
+        # decaying each against the data clock
+        new_categories = dict.fromkeys(THREAT_CATEGORIES, 0.0)
+        survivors: list[dict] = []
+        for (method, ts), a in retained.items():
+            decay = _decay_factor(ts, half_life_hours, ref=ref_clock) if ts else 1.0
+            contribution = a.get("contribution", 0.0) * (decay if a.get("contribution", 0) else 1.0)
+            # Prune negligible (decayed below 1% of its original weight)
+            if contribution < 0.05:
+                continue
+            survivors.append({**a, "contribution": round(contribution, 3)})
+            for cat in a.get("categories", []):
+                if cat in new_categories:
+                    new_categories[cat] += contribution / len(a.get("categories", [1]))
 
         # Compute overall as max of category scores, capped at 100
         for cat, val in new_categories.items():
@@ -537,7 +604,7 @@ def compute_risk_scores(
 
         # Compute trend: (current - previous) / hours_since_last_update
         if score.last_updated:
-            hours = _hours_since(score.last_updated)
+            hours = _hours_since_ref(score.last_updated, ref_clock)
             if hours > 0:
                 trend = (overall - prev_overall) / hours
             else:
@@ -551,7 +618,7 @@ def compute_risk_scores(
         score.peak = max(score.peak, overall)
         score.trend = trend
         score.last_updated = now
-        score.contributing_anomalies = all_contributing[-max_anomalies:]
+        score.contributing_anomalies = survivors[-max_anomalies:]
         score.score_history.append((now, overall))
         # Keep last 24 history entries
         if len(score.score_history) > 24:
@@ -563,7 +630,7 @@ def compute_risk_scores(
         if entity_id not in entity_anomalies and score.overall > 0:
             # Apply decay since last update
             if score.last_updated:
-                hours = _hours_since(score.last_updated)
+                hours = _hours_since_ref(score.last_updated, ref_clock)
                 decay = 0.5 ** (hours / half_life_hours)
                 score.overall = min(score.overall * decay, _MAX_SCORE)
                 for cat in score.categories:

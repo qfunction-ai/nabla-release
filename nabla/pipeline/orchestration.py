@@ -325,6 +325,10 @@ def run_pipeline(
         # ── Step 4c: Update entity risk scores ──────────────────
         try:
             from nabla.risk import compute_risk_scores
+            from nabla.rl.bandit import DetectionMethodBandit
+            # A5: wire the bandit for Bayesian weight adjustment (neutral
+            # weights until Phase 3 feeds it real labels — the wiring is real now)
+            bandit_store = DetectionMethodBandit.load(settings.rl_state_file)
             # Build entity type map from entity profiles
             entity_type_map: dict[str, str] = {}
             if detection.entity_profiles is not None:
@@ -341,6 +345,7 @@ def run_pipeline(
                 temporal_chains=detection.temporal_chains if detection.temporal_chains else [],
                 watchlist=watchlist,
                 peer_groups=peer_groups,
+                bandit_store=bandit_store,
                 half_life_hours=settings.risk_score_decay_half_life_hours,
                 max_anomalies=settings.risk_score_max_anomalies,
             )

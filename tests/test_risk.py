@@ -208,6 +208,8 @@ class TestComputeRiskScores:
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = os.path.join(tmpdir, "risk.json")
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
                 mock_settings.return_value = s
 
                 store = compute_risk_scores(
@@ -228,6 +230,7 @@ class TestComputeRiskScores:
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = os.path.join(tmpdir, "risk.json")
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
                 mock_settings.return_value = s
 
                 # Recent anomaly alone
@@ -237,7 +240,9 @@ class TestComputeRiskScores:
                 )
                 recent_score = store_recent.get("alice").overall
 
-                # Old anomaly alone
+                # Old anomaly alone — fresh store file (A6 retention means
+                # a shared file carries the recent anomaly into the old run)
+                s.entity_risk_scores_file = os.path.join(tmpdir, "risk_old.json")
                 store_old = compute_risk_scores(
                     anomalies=[old],
                     entity_type_map=entity_type_map,
@@ -255,6 +260,7 @@ class TestComputeRiskScores:
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = os.path.join(tmpdir, "risk.json")
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
                 mock_settings.return_value = s
 
                 store_low = compute_risk_scores([low], entity_type_map)
@@ -266,6 +272,7 @@ class TestComputeRiskScores:
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = os.path.join(tmpdir, "risk.json")
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
                 mock_settings.return_value = s
 
                 store = compute_risk_scores(
@@ -303,6 +310,7 @@ class TestComputeRiskScores:
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = os.path.join(tmpdir, "risk.json")
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
                 mock_settings.return_value = s
 
                 store = compute_risk_scores(anomalies, entity_type_map)
@@ -320,6 +328,7 @@ class TestComputeRiskScores:
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = os.path.join(tmpdir, "risk.json")
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
                 mock_settings.return_value = s
 
                 store = compute_risk_scores(anomalies, entity_type_map)
@@ -337,6 +346,7 @@ class TestComputeRiskScores:
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = os.path.join(tmpdir, "risk.json")
+                s.system_state_file = os.path.join(tmpdir, "nonexistent_state.json")  # data clock -> wall fallback
                 mock_settings.return_value = s
 
                 store = compute_risk_scores(anomalies, entity_type_map)
