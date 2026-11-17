@@ -60,6 +60,7 @@ def _compact_anomaly(a: dict) -> dict:
     details, categories, mitre_attack.
     """
     return {
+        "anomaly_id": a.get("anomaly_id", ""),
         "entity": a.get("entity", a.get("user", "")),
         "entity_type": a.get("entity_type", "user"),
         "severity": a.get("severity", "medium"),
@@ -68,6 +69,10 @@ def _compact_anomaly(a: dict) -> dict:
         "details": str(a.get("details", a.get("description", "")))[:200],
         "categories": a.get("categories", []),
         "mitre_attack": a.get("mitre_attack", []),
+        # Phase 3: the label pipeline's per-anomaly record needs the raw
+        # score compared against the threshold (gate 8 — calibrate() cannot
+        # pick a precision-meeting threshold without it).
+        "raw_score": a.get("raw_score"),
     }
 
 
@@ -308,6 +313,14 @@ def run_pipeline(
         logger.info("Supervisor completed in %.1fs", step_durations["supervisor"])
 
         # ── Step 4b: Persist incidents ──────────────────────────
+        # The bounded anomaly summary is built HERE (before incident creation)
+        # because save_incidents loads it from history for the contributing-
+        # anomaly linkage — persisting it only at completion left the linkage
+        # reading an empty/absent record (dry-run find: incident ids: 0).
+        run_record["anomalies"] = _summarize_anomalies_for_run(
+            detection, len(detection.anomalies) if detection.anomalies else 0
+        )
+        save_run(run_record)
         if correlation.findings:
             try:
                 from nabla.incidents import save_incidents
@@ -378,11 +391,7 @@ def run_pipeline(
             findings_count=findings_count,
             step_durations=step_durations,
         )
-        # Persist a bounded anomaly summary (UI-2): the timeline API and
-        # entity attribution read run["anomalies"] — previously always empty.
-        run_record["anomalies"] = _summarize_anomalies_for_run(
-            detection, anomaly_count
-        )
+        # (anomaly summary moved to pre-incident, above)
         # Persist findings summary + supervisor narrative (UI-4): the run
         # detail view and history table consume these.
         run_record["findings"] = _summarize_findings_for_run(
