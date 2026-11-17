@@ -699,7 +699,7 @@ class TestLoadEnvironmentContext:
                 "joindomain": ["Exclusively used to join computers to the domain"],
             },
             "network_ranges": ["10.0.0.0/8"],
-            "new_accounts": ["helpdeskone", "joindomain"],
+            "new_accounts": ["helpdesk_user", "joindomain"],
             "service_accounts": ["svc_backup"],
             "admin_accounts": ["admin"],
             "benign_patterns": ["certutil downloading known installer"],
@@ -712,7 +712,7 @@ class TestLoadEnvironmentContext:
             assert ctx["environment"] == ["Only one forest in the domain"]
             assert ctx["entities"] == {"joindomain": ["Exclusively used to join computers to the domain"]}
             assert ctx["network_ranges"] == ["10.0.0.0/8"]
-            assert ctx["new_accounts"] == {"helpdeskone", "joindomain"}
+            assert ctx["new_accounts"] == {"helpdesk_user", "joindomain"}
             assert ctx["service_accounts"] == {"svc_backup"}
             assert ctx["admin_accounts"] == {"admin"}
             assert ctx["benign_patterns"] == ["certutil downloading known installer"]
@@ -841,13 +841,13 @@ class TestFormatEnvContextBlock:
             "environment": [],
             "entities": {},
             "network_ranges": [],
-            "new_accounts": {"helpdeskone", "joindomain"},
+            "new_accounts": {"helpdesk_user", "joindomain"},
             "service_accounts": set(),
             "admin_accounts": set(),
             "benign_patterns": [],
         }
         text = _format_env_context_block(ctx, [])
-        assert "helpdeskone" in text
+        assert "helpdesk_user" in text
         assert "joindomain" in text
         assert "grace period" in text.lower()
 

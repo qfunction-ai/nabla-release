@@ -35,7 +35,7 @@ def _make_dataset(tmp_path, days=3, events_per_day=10):
                 "user": random.choice(users),
                 "action": "login_success",
                 "source_ip": f"10.0.1.{random.randint(2,50)}",
-                "host": "EC2AMAZ-OCPNFK9",
+                "host": "WIN-SRV01",
                 "log_type": "auth",
             }))
         (d / f"2026-08-{10+day:02d}.jsonl").write_text("\n".join(lines) + "\n")

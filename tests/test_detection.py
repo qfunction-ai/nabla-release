@@ -753,7 +753,7 @@ def test_registry_abuse_critical_key():
     entries = [
         {"type": "endpoint", "process": "C:\\Intel\\Build\\LB3.exe",
          "action": "registry_set", "TargetObject": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WINEVT\\Channels\\test\\Enabled",
-         "user": "EC2AMAZ-I41BETP\\Administrator", "timestamp": "2024-01-01T10:00:00Z"},
+         "user": "WIN-I41BETP\\Administrator", "timestamp": "2024-01-01T10:00:00Z"},
     ]
     anomalies, _ = detect_anomalies(entries)
     ra_anomalies = [a for a in anomalies if a["detection_method"] == "registry_abuse"]
@@ -1809,7 +1809,7 @@ class TestNewAccountGracePeriod:
     def test_new_account_skips_z_score(self):
         """New accounts should not trigger z-score detection."""
         # Create enough entries for a single user to be an outlier
-        entries = self._make_entries("helpdeskone", 50)
+        entries = self._make_entries("helpdesk_user", 50)
         # Add a few entries for other users to establish a baseline
         for i in range(5):
             entries.append({
@@ -1820,23 +1820,23 @@ class TestNewAccountGracePeriod:
                 "timestamp": "2026-01-15T10:00:00Z",
             })
 
-        # Without new_accounts — should flag helpdeskone
+        # Without new_accounts — should flag helpdesk_user
         anomalies_no_grace, _ = detect_anomalies(entries, new_accounts=None)
         z_score_no_grace = [a for a in anomalies_no_grace
                            if a.get("detection_method") in ("z_score", "entity_z_score")
-                           and a.get("user") == "helpdeskone"]
+                           and a.get("user") == "helpdesk_user"]
 
-        # With new_accounts — should NOT flag helpdeskone
+        # With new_accounts — should NOT flag helpdesk_user
         anomalies_with_grace, _ = detect_anomalies(
-            entries, new_accounts={"helpdeskone"}
+            entries, new_accounts={"helpdesk_user"}
         )
         z_score_with_grace = [a for a in anomalies_with_grace
                               if a.get("detection_method") in ("z_score", "entity_z_score")
-                              and a.get("user") == "helpdeskone"]
+                              and a.get("user") == "helpdesk_user"]
 
-        # helpdeskone should be flagged without grace period
+        # helpdesk_user should be flagged without grace period
         assert len(z_score_no_grace) >= 1
-        # helpdeskone should NOT be flagged with grace period
+        # helpdesk_user should NOT be flagged with grace period
         assert len(z_score_with_grace) == 0
 
     def test_new_account_skips_activity_spike(self):
@@ -1872,13 +1872,13 @@ class TestNewAccountGracePeriod:
         """New account grace period should NOT affect other detection methods."""
         entries = [{
             "type": "auth",
-            "user": "helpdeskone",
+            "user": "helpdesk_user",
             "source_ip": "8.8.8.8",
             "action": "login_failure",
             "timestamp": "2026-01-15T02:00:00Z",
         } for _ in range(10)]  # Off-hours + brute force
 
-        anomalies, _ = detect_anomalies(entries, new_accounts={"helpdeskone"})
+        anomalies, _ = detect_anomalies(entries, new_accounts={"helpdesk_user"})
         # off_hours and brute_force should still fire
         methods = {a.get("detection_method") for a in anomalies}
         assert "off_hours" in methods or "failed_login_ratio" in methods

@@ -11,7 +11,7 @@ const { apiFetch } = await import('../lib/api');
 
 function renderEntities() {
   return render(
-    <MemoryRouter initialEntries={['/entities?entity=smith']}>
+    <MemoryRouter initialEntries={['/entities?entity=analyst_a']}>
       <Entities />
     </MemoryRouter>
   );
@@ -31,13 +31,13 @@ describe('Peer group card (course plan 2026-11-17)', () => {
         return Promise.resolve({ events: [], total: 0 });
       }
       if (path.includes('/attribution')) {
-        return Promise.resolve({ entity_id: 'smith', anomalies: [], incidents: [], risk: null, runs_scanned: 0 });
+        return Promise.resolve({ entity_id: 'analyst_a', anomalies: [], incidents: [], risk: null, runs_scanned: 0 });
       }
       return Promise.resolve({
         type: 'user', warm: true, observation_count: 10, environment_facts: [],
         peer_group: {
           group_id: 'user_0', label: 'business-hours',
-          members: ['smith', 'williams', 'helpdeskone'], centroid: { event_count: 40 },
+          members: ['analyst_a', 'analyst_b', 'helpdesk_user'], centroid: { event_count: 40 },
         },
         risk_score: { overall: 0, categories: {}, peak: 0, trend: 0, trend_label: 'stable' },
       });
@@ -45,11 +45,11 @@ describe('Peer group card (course plan 2026-11-17)', () => {
 
     renderEntities();
     expect(await screen.findByText('PEER GROUP')).toBeInTheDocument();
-    expect(screen.getByText('williams')).toBeInTheDocument();
-    expect(screen.getByText('helpdeskone')).toBeInTheDocument();
-    // smith appears as a member chip (getAllByText covers both the member
+    expect(screen.getByText('analyst_b')).toBeInTheDocument();
+    expect(screen.getByText('helpdesk_user')).toBeInTheDocument();
+    // the selected entity appears as a member chip (getAllByText covers both the member
     // chip and any other render site; the member chip is present)
-    expect(screen.getAllByText('smith').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('analyst_a').length).toBeGreaterThan(0);
   });
 
   it('renders the null state when no peer group exists', async () => {

@@ -217,7 +217,7 @@ class SumoLogicConnector:
         # Host from computer field
         computer = event.get("computer", "")
         if computer:
-            # Strip domain suffix (e.g. EC2AMAZ-OCPNFK9.qfunction.ai → EC2AMAZ-OCPNFK9)
+            # Strip domain suffix (e.g. WIN-DC01.corp.example → WIN-DC01)
             normalized["host"] = computer.split(".")[0] if "." in computer else computer
 
         # Event ID and action
