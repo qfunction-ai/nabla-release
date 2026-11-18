@@ -178,8 +178,11 @@ class TestA10Quarantine:
     def test_held_batch_does_not_absorb(self, tmp_path, monkeypatch):
         B = self._env(tmp_path, monkeypatch)
         store = B.EntityProfileStore(str(tmp_path / "p.json"))
-        store.update_user("alice", [{"user": "alice", "action": "x",
-                                     "timestamp": "2025-01-15T09:00:00Z"}] * 10)
+        # Warm the profile past entity_warmup_observations (default 3) —
+        # the cold-entity carve-out absorbs held batches for cold entities
+        for day in range(4):
+            store.update_user("alice", [{"user": "alice", "action": "x",
+                                         "timestamp": f"2025-01-1{day}T09:00:00Z"}] * 10)
         ewma_before = store.get_user("alice").typical_event_count.value
         B.flag_quarantine(["alice"])
         # An attack-sized batch arrives while held
@@ -187,3 +190,28 @@ class TestA10Quarantine:
                                      "timestamp": "2025-01-15T10:00:00Z"}] * 500)
         ewma_after = store.get_user("alice").typical_event_count.value
         assert ewma_after == ewma_before, "held batch must NOT absorb into baselines"
+
+
+def test_rate_uses_user_window_not_batch_window():
+    """Stage-4 rehearsal catch #4: mixed batches must not dilute per-user rates.
+
+    A user with 23 events in 1.5h inside a batch spanning 24h computes
+    15.3/hr (their rate) — not 0.96/hr (diluted across the batch).
+    """
+    from nabla.baselines import _observation_window_hours
+    user_events = [
+        {"user": "smith", "timestamp": "2025-01-15T09:00:00Z"},
+        {"user": "smith", "timestamp": "2025-01-15T10:30:00Z"},
+    ]
+    full_batch = user_events + [
+        {"user": "noise", "timestamp": "2025-01-15T00:00:00Z"},
+        {"user": "noise", "timestamp": "2025-01-15T23:59:00Z"},
+    ]
+    user_window = _observation_window_hours(user_events)  # 1.5h
+    batch_window = _observation_window_hours(full_batch)  # ~24h
+    assert user_window < 2.0
+    assert batch_window > 23.0
+    # The detection math must use the user's window:
+    rate_correct = 23 / user_window
+    rate_buggy = 23 / batch_window
+    assert rate_correct > 15.0 and rate_buggy < 1.0

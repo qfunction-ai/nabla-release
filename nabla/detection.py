@@ -558,7 +558,12 @@ def detect_anomalies(
                     # A8: rate vs rate — the run's events-per-hour against
                     # the per-hour EWMA (count-vs-rate compared mismatched units)
                     from nabla.baselines import _observation_window_hours
-                    run_rate = count / _observation_window_hours(entries)
+                    # A8 fix (stage-4 rehearsal catch #4): the window must be
+                    # THIS USER's events' span, not the full batch's — mixed
+                    # batches diluted per-user rates to near-zero (smith's
+                    # 23 events over his 1.4h became 23/24h under the noise
+                    # users' span; z went negative and the detector died)
+                    run_rate = count / _observation_window_hours(events)
                     entity_z = profile.typical_event_count.z_score(run_rate)
                     if entity_z > entity_z_sigma:
                         anomalies.append({
@@ -766,7 +771,7 @@ def detect_anomalies(
                 profile = entity_profiles.get_user(user)
                 if profile and profile.typical_event_count.value > 0:
                     from nabla.baselines import _observation_window_hours
-                    run_rate = count / _observation_window_hours(entries)
+                    run_rate = count / _observation_window_hours(events)  # user's span (A8 fix)
                     entity_spike = run_rate > profile.typical_event_count.value * spike_mult
                     if entity_spike:
                         anomalies.append({
@@ -1877,7 +1882,7 @@ def detect_anomalies(
                 if profile.typical_event_count.variance > 0:
                     from nabla.baselines import _observation_window_hours
                     event_z = profile.typical_event_count.z_score(
-                        count / _observation_window_hours(entries))
+                        count / _observation_window_hours(events))  # user's span (A8 fix)
                     if event_z > 1.5:  # Lower threshold for composite
                         signals += 1
                         signal_details.append(f"event_count_z={event_z:.1f}")

@@ -178,6 +178,16 @@ class RecencySet:
     def __len__(self) -> int:
         return len(self.members)
 
+    def __sub__(self, other):
+        return self.members - set(other)
+
+    def __rsub__(self, other):
+        return set(other) - self.members
+
+    def __or__(self, other):
+        return self.members | set(other)
+
+
     def to_dict(self) -> dict:
         return {"members": sorted(self.members, key=lambda m: str(m)),
                 "last_seen": {str(k): v for k, v in self.last_seen.items()}}
@@ -606,6 +616,8 @@ class EntityProfileStore:
         profile = self.get_or_create_user(entity_id)
         profile.last_seen = _now_iso()
         profile.observation_count += 1
+        from nabla.config import get_settings as _gs
+        warm_up_observations = _gs().entity_warmup_observations
 
         # A10 quarantine: when the pipeline is in DETECTION phase, this
         # batch's events may be anomalous (the run that produced them
@@ -614,7 +626,15 @@ class EntityProfileStore:
         # detection fires; released by dispositions per the truth table
         # (false_positive/benign_true_positive -> release; true_positive ->
         # hold; none -> TTL-release on the DATA clock, default 7 days).
-        if self._is_quarantined(entity_id):
+        if (
+            self._is_quarantined(entity_id)
+            # Cold entities absorb regardless: quarantine protects a WARM
+            # baseline from attack inflation; holding a cold entity's batches
+            # starves profile-building entirely during detection-phase ingest
+            # of fresh data (the course's forced-detection path — found live
+            # in the stage-4 dress rehearsal when smith's rate read 0.0/hr)
+            and profile.observation_count > warm_up_observations
+        ):
             self._bump_quarantine_clock(entity_id)
             return  # sets/EWMA untouched while held
 

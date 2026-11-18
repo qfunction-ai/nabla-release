@@ -907,6 +907,15 @@ def _reset_files(scope: str, data_dir) -> list[str]:
             "runs.json",
         )
     ] + [peer_path]
+    # Stage-4 rehearsal find #5: the calibration/feedback stores are LEARNED
+    # state (Phase 3 created them after the scopes were defined) — resets
+    # never cleared them, so thresholds and labels survived every scope
+    # (found live: Tuesday's 42 labels + 2.25 threshold outlived three
+    # `reset --scope all` runs during the rehearsal)
+    fb_dir = os.path.join(base, "feedback")
+    if os.path.isdir(fb_dir):
+        import glob as _glob
+        learned_files += _glob.glob(os.path.join(fb_dir, "*.json*"))
     all_files = learned_files + [
         os.path.join(base, f) for f in (
             "incidents.json", "runs.json", "environment_context.json",
@@ -924,7 +933,7 @@ def reset(
     """Reset Nabla state for course cohorts / fresh baselines (phase-mechanics plan).
 
     phase-only: phase state + baseline snapshots (profiles survive).
-    learned:   + entity profiles, risk, peers, RL, GCN-LOF model, cursors.
+    learned:   + entity profiles, risk, peers, RL, GCN-LOF model, cursors, calibration/feedback
     all:       + incidents, run history, environment context, watchlists
                (auth users and connector credentials always survive).
     """

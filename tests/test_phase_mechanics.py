@@ -180,3 +180,15 @@ class TestReset:
             r = runner.invoke(app, ["reset", "--scope", "learned"], input="n\n")
         assert r.exit_code != 0 or "Aborted" in r.output
         assert (tmp_path / "entity_profiles.json").exists()  # nothing deleted
+
+
+class TestResetScopesCoverCalibration:
+    def test_feedback_dir_in_learned_scope(self, tmp_path):
+        """Stage-4 find #5: calibration/feedback are learned state — resets clear them."""
+        import os
+        from nabla.cli import _reset_files
+        (tmp_path / "feedback").mkdir()
+        (tmp_path / "feedback" / "labels.jsonl").write_text("x")
+        (tmp_path / "feedback" / "calibration.json").write_text("{}")
+        files = _reset_files("learned", tmp_path)
+        assert any("feedback" in f for f in files), "feedback store must reset with learned scope"
