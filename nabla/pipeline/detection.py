@@ -350,10 +350,10 @@ def _write_environment_context_block(client: Letta, agents: dict, result: Detect
                 if ip:
                     ips_by_entity[ent].add(ip)
                 ts = str(e.get("timestamp", ""))
-                if ts[11:13].isdigit():
-                    hour = int(ts[11:13])
-                    if hour < 6 or hour >= 22:
-                        offhours_by_entity[ent] += 1
+                from nabla.utils import _parse_hour
+                hour = _parse_hour(ts)
+                if hour < 6 or hour >= 22:
+                    offhours_by_entity[ent] += 1
             for ent, count in events_by_entity.items():
                 if ent in (result.anomalous_entities or set()):
                     run_stats[ent] = {

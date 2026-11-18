@@ -397,7 +397,8 @@ def compute_baselines(entries: list[dict]) -> dict:
         ts = e.get("timestamp", "")
         if ts:
             try:
-                hour = int(ts[11:13])
+                from nabla.utils import _parse_hour
+                hour = _parse_hour(ts)
                 user_hours[user].append(hour)
             except (ValueError, IndexError):
                 pass  # silent by design: malformed entry fields (2026-09 sweep)
@@ -501,7 +502,8 @@ def detect_anomalies(
         ts = e.get("timestamp", "")
         if ts:
             try:
-                hour = int(ts[11:13])
+                from nabla.utils import _parse_hour
+                hour = _parse_hour(ts)
                 user_hours[user].append(hour)
             except (ValueError, IndexError):
                 pass  # silent by design: malformed entry fields (2026-09 sweep)
@@ -583,8 +585,11 @@ def detect_anomalies(
                             "entity_baseline": True,
                         })
                         continue  # Entity baseline handled it, skip batch check
-            # Fall back to batch-level z-score
-            if std_count > 0:
+            # Fall back to batch-level z-score (A15: with n users the max
+            # achievable z is sqrt(n-1) — below 10 users the 2.0 threshold is
+            # unreachable; skip the batch statistic rather than run math that
+            # can never fire)
+            if std_count > 0 and len(user_events) >= 10:
                 z_score = (count - mean_count) / std_count
                 if z_score > z_sigma:
                     anomalies.append({
@@ -743,7 +748,7 @@ def detect_anomalies(
             # Fall back to batch-level multi-IP check
             if not entity_flagged and len(ips) >= ip_count:
                 anomalies.append({
-                    "type": "impossible_travel",
+                    "type": "multiple_source_ips",
                     "severity": "high",
                     "user": user,
                     "source_ip": ", ".join(ips),
@@ -889,7 +894,13 @@ def detect_anomalies(
     if not critical_hosts:
         for e in entries:
             h = _get_field(e, "host", "Computer").upper()
-            if any(kw in h for kw in ["DC", "DOMAIN", "BUILD", "PROD", "FINANCE"]):
+            # A20: token-match, not substring — 'DC' as a substring hits
+            # unrelated names; split on separators and match whole tokens
+            tokens = re.split(r"[-_.]", h.upper())
+            # A20: whole-token matches; DC01/DC02-style names included since
+            # bare "DC" as a token is rare in real hostnames
+            critical_tokens = ["DC", "DC01", "DC02", "DOMAIN", "BUILD", "PROD", "FINANCE"]
+            if any(kw in tokens for kw in critical_tokens):
                 critical_hosts.add(_get_field(e, "host", "Computer"))
 
     for e in entries:

@@ -112,7 +112,7 @@ class TestMapAnomalyToPhases:
         assert "initial_access" in phases
 
     def test_multi_ip_maps_to_lateral_movement(self):
-        a = _make_anomaly("impossible_travel", "multi_ip")
+        a = _make_anomaly("multiple_source_ips", "multi_ip")
         phases = map_anomaly_to_phases(a)
         assert "lateral_movement" in phases
 

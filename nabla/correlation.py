@@ -37,7 +37,7 @@ _TYPE_LABELS = {
     "z_score_spike": "statistically anomalous activity levels",
     "brute_force_attempt": "brute force authentication attempts",
     "off_hours_activity": "activity during off-hours (22:00-06:00 UTC)",
-    "impossible_travel": "impossible travel between IPs",
+    "multiple_source_ips": "activity from multiple source IPs",
     "suspicious_domain": "connections to suspicious domains",
     "privilege_escalation": "privilege escalation activity",
     "unusual_process": "execution of unusual processes",
@@ -77,7 +77,7 @@ _MITRE_NAMES = {
 
 _CRITICAL_ANOMALY_TYPES = {
     "privilege_escalation", "brute_force_attempt", "suspicious_domain",
-    "impossible_travel", "lolbin_abuse", "renamed_attack_tool",
+    "multiple_source_ips", "lolbin_abuse", "renamed_attack_tool",
     "known_attack_script",
 }
 
@@ -1053,10 +1053,10 @@ def _describe_phase(phase: dict, is_first: bool, prev_phase: dict) -> str:
         detail_clauses.append("during off-hours (22:00-06:00 UTC)")
 
     # Impossible travel: include IP count and list
-    if "impossible_travel" in types:
+    if "multiple_source_ips" in types:
         it_events = [
             e for e in events
-            if e.get("type") == "impossible_travel"
+            if e.get("type") == "multiple_source_ips"
             or e.get("detection_method") == "multi_ip"
         ]
         for e in it_events:

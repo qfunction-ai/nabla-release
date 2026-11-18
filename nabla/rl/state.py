@@ -34,7 +34,7 @@ def extract_method_counts(anomaly_queue_text: str) -> dict[str, int]:
         "z_score_spike": ["z_score", "z-score", "z="],
         "brute_force_attempt": ["brute_force", "failed login", "failed logins"],
         "off_hours_activity": ["off_hours", "off-hours"],
-        "impossible_travel": ["impossible_travel", "unique IPs", "multi-ip"],
+        "multiple_source_ips": ["multiple_source_ips", "unique IPs", "multi-ip"],
         "activity_spike": ["activity_spike", "spike"],
         "pre_flagged": ["pre-flagged", "pre_flagged"],
         "lolbin_abuse": ["lolbin_abuse", "lolbin"],

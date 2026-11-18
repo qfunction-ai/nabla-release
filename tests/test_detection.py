@@ -1667,7 +1667,7 @@ class TestIsRoutableIP:
 # --- Private IP filtering in detection ---
 
 class TestPrivateIPFiltering:
-    """Tests that private IPs are excluded from multi_ip/impossible_travel detection."""
+    """Tests that private IPs are excluded from multi_ip/multiple_source_ips detection."""
 
     def _make_auth_entries(self, user: str, ips: list[str]) -> list[dict]:
         """Create auth log entries with the given IPs for a user."""
@@ -1750,8 +1750,9 @@ class TestNewAccountGracePeriod:
         """New accounts should not trigger z-score detection."""
         # Create enough entries for a single user to be an outlier
         entries = self._make_entries("helpdeskone", 50)
-        # Add a few entries for other users to establish a baseline
-        for i in range(5):
+        # Add enough users for the batch z to be computable (A15: >= 10 users
+        # — the max z is sqrt(n-1); below that the threshold is unreachable)
+        for i in range(11):
             entries.append({
                 "type": "auth",
                 "user": f"normaluser{i}",

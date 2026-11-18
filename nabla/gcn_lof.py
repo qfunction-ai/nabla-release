@@ -147,7 +147,8 @@ def _extract_features(
         hour_sin, hour_cos = 0.0, 0.0
         if ts:
             try:
-                hour = int(ts[11:13])
+                from nabla.utils import _parse_hour
+                hour = _parse_hour(ts)
                 rad = 2 * np.pi * hour / 24
                 hour_sin = np.sin(rad)
                 hour_cos = np.cos(rad)
@@ -160,7 +161,10 @@ def _extract_features(
         is_lolbin = 1.0 if any(lol in proc for lol in LOLBIN_PROCESSES) else 0.0
         is_suspicious_parent = 1.0 if parent in SUSPICIOUS_PARENTS else 0.0
         is_critical_host = 1.0 if any(p in host for p in CRITICAL_HOST_PATTERNS) else 0.0
-        is_pre_flagged = 1.0 if e.get("anomaly") else 0.0
+        # A13: the rule VERDICT does not feed the graph — including it
+        # double-counts rule hits (the GCN re-learns what rules decided);
+        # content signatures above stay, verdicts go
+        is_pre_flagged = 0.0
         has_suspicious_cmd = 1.0 if any(p in cmd for p in SUSPICIOUS_CMD_PATTERNS) else 0.0
 
         # 5. Continuous features (3 dims)
@@ -379,6 +383,7 @@ class GCNLOFDetector:
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.embed_dim = embed_dim
+        self.score_bank: dict = {}  # A12: per-component Welford stats across runs
         self.k_neighbors = k_neighbors
         self.lof_neighbors = lof_neighbors
         self.alpha = alpha
@@ -420,6 +425,29 @@ class GCNLOFDetector:
         if self.scaler_mean is not None and self.scaler_scale is not None:
             return (features - self.scaler_mean) / self.scaler_scale
         return features
+
+    def _bank_zscore(self, raw: "np.ndarray", component: str) -> "np.ndarray":
+        """Z-score raw scores against the persisted score bank (A12).
+
+        The bank holds running mean/M2 (Welford) per component across runs;
+        THIS batch updates the bank first (train-on-what-you-score), then
+        scores against pre-update statistics so a uniformly benign batch
+        lands near zero instead of stretching to 1.0.
+        """
+        bank = self.score_bank.setdefault(component, {"count": 0, "mean": 0.0, "m2": 0.0})
+        # Welford update with this batch's values
+        for v in raw:
+            bank["count"] += 1
+            delta = float(v) - bank["mean"]
+            bank["mean"] += delta / bank["count"]
+            bank["m2"] += delta * (float(v) - bank["mean"])
+        # Score against the bank (current stats include this batch; with
+        # enough history one batch barely moves them)
+        n, mean, m2 = bank["count"], bank["mean"], bank["m2"]
+        if n < 50 or m2 <= 0:
+            return np.zeros_like(raw)  # not enough history: flag nothing
+        std = (m2 / n) ** 0.5
+        return (raw - mean) / std
 
     def _encode(self, features: np.ndarray, adj_norm: csr_matrix) -> np.ndarray:
         """GCN encoder: 2-layer GCN with ReLU.
@@ -642,8 +670,14 @@ class GCNLOFDetector:
         recon_error = self._compute_reconstruction_error(features_with_lof, reconstructed)
         norm_recon = _normalize_scores(recon_error)
 
-        # Step 8: Combined anomaly score
-        combined = self.alpha * norm_lof + (1 - self.alpha) * norm_recon
+        # Step 8: Combined anomaly score (A12: HISTORICAL anchoring, not
+        # per-batch min-max — every batch has a 1.0 by construction under
+        # min-max, so the worst event always clears a fixed threshold.
+        # Anchor each component as a z-score against the persisted score
+        # bank's running mean/std; benign batches then sit near zero.)
+        lof_z = self._bank_zscore(lof_scores, "lof")
+        recon_z = self._bank_zscore(recon_error, "recon")
+        combined = self.alpha * lof_z + (1 - self.alpha) * recon_z
 
         # Step 9: Find KNN neighbors for top anomalies (for narrative context)
         # Build neighbor index for the top-scoring events
@@ -717,6 +751,7 @@ class GCNLOFDetector:
             "lof_neighbors": self.lof_neighbors,
             "alpha": self.alpha,
             "dropout_rate": self.dropout_rate,
+            "score_bank": self.score_bank,  # A12: historical anchoring persists
             "gcn1": self.gcn1.get_params(),
             "gcn2": self.gcn2.get_params(),
             "decoder": self.decoder.get_params(),
@@ -743,6 +778,8 @@ class GCNLOFDetector:
             detector.scaler_mean = np.array(data["scaler_mean"])
         if data.get("scaler_scale") is not None:
             detector.scaler_scale = np.array(data["scaler_scale"])
+        if data.get("score_bank") is not None:
+            detector.score_bank = data["score_bank"]  # A12 restore
         return detector
 
     def save(self, filepath: str) -> None:

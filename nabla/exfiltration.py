@@ -33,6 +33,13 @@ logger = get_logger("exfiltration")
 # ---------------------------------------------------------------------------
 
 # Known cloud storage endpoints that indicate potential exfiltration
+def _sanctioned_services() -> set[str]:
+    """Sanctioned cloud services (A16): comma-separated NABLA_SANCTIONED_SERVICES."""
+    import os
+    raw = os.environ.get("NABLA_SANCTIONED_SERVICES", "")
+    return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+
 _CLOUD_STORAGE_DOMAINS = {
     "drive.google.com", "docs.google.com", "drive.google.com",
     "dropbox.com", "api.dropboxapi.com", "content.dropboxapi.com",
@@ -141,15 +148,19 @@ def _detect_volume_anomaly(
     """
     anomalies = []
 
-    # Count network events per user
-    user_network_counts: dict[str, int] = Counter()
+    # Count network events per user WITH the batch time span (A17: compare
+    # like with like — network-events-per-hour against the per-hour baseline;
+    # the old count-vs-EWMA compared mismatched units and rarely fired)
+    from nabla.baselines import _observation_window_hours
+    net_entries_by_user: dict[str, list] = {}
     for entry in entries:
         if entry.get("action") == "network_connect" or entry.get("type") == "network":
             user = entry.get("user", "")
             if user:
-                user_network_counts[user] += 1
+                net_entries_by_user.setdefault(user, []).append(entry)
 
-    for user, count in user_network_counts.items():
+    for user, user_net in net_entries_by_user.items():
+        count = len(user_net)
         if entity_profiles is None:
             continue
         profile = entity_profiles.get_user(user)
@@ -157,7 +168,7 @@ def _detect_volume_anomaly(
             continue
 
         ewma = profile.typical_event_count
-        z = ewma.z_score(count)
+        z = ewma.z_score(count / _observation_window_hours(user_net))
         if z > sigma:
             anomalies.append({
                 "entity": user,
@@ -243,11 +254,16 @@ def _detect_destination_anomaly(
 
             flags = []
 
-            # Check cloud storage destination
+            # Check cloud storage destination (A16: sanctioned services are
+            # exempt — most orgs use Drive/OneDrive/etc. as daily traffic;
+            # NABLA_SANCTIONED_SERVICES is a comma-separated env list)
             if dest_domain:
                 domain_lower = dest_domain.lower()
+                sanctioned = _sanctioned_services()
                 for cloud_domain in _CLOUD_STORAGE_DOMAINS:
                     if cloud_domain in domain_lower:
+                        if any(s in domain_lower for s in sanctioned):
+                            break  # sanctioned for this deployment: not exfil
                         flags.append(f"cloud storage: {cloud_domain}")
                         break
 
@@ -475,21 +491,27 @@ def _detect_staging_pattern(
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 })
             elif network_after_create:
-                # File creation followed by network transfer (no archival)
-                anomalies.append({
-                    "entity": user,
-                    "entity_type": "user",
-                    "detection_method": "exfil_staging",
-                    "type": "data_exfiltration",
-                    "severity": "high",
-                    "confidence": 0.6,
-                    "details": (
-                        f"User {user} had file creation followed by network "
-                        f"transfer within {window_minutes} minutes (no archival)"
-                    ),
-                    "mitre_attack": [_MITRE_T1048],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                })
+                # A21: create->transfer alone is ordinary work (every office
+                # user does this). Alert only when the transfer is sizeable;
+                # below that it is informational context another finding can
+                # cite, not a standalone high-severity alert.
+                transfer_size = sum(int(t.get("bytes") or 0) for t in network_transfers)
+                if transfer_size >= 10_000_000:  # 10 MB heuristic
+                    anomalies.append({
+                        "entity": user,
+                        "entity_type": "user",
+                        "detection_method": "exfil_staging",
+                        "type": "data_exfiltration",
+                        "severity": "high",
+                        "confidence": 0.6,
+                        "details": (
+                            f"User {user} had file creation followed by a sizeable "
+                            f"network transfer ({transfer_size / 1e6:.0f} MB) within "
+                            f"{window_minutes} minutes (no archival)"
+                        ),
+                        "mitre_attack": [_MITRE_T1048],
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
 
     return anomalies
 

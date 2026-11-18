@@ -55,7 +55,7 @@ def _sample_findings():
         },
         {
             "severity": "high",
-            "type": "impossible_travel, off_hours",
+            "type": "multiple_source_ips, off_hours",
             "entity": "10.0.1.55",
             "entity_type": "ip",
             "cross_type": "cross-type",
@@ -209,7 +209,7 @@ class TestSaveIncidents:
     if lolbin_abuse were a false positive → severity drops from CRITICAL to HIGH
 
   [ip] 10.0.1.55:
-    impossible_travel: threshold=3, actual=5, margin=+2
+    multiple_source_ips: threshold=3, actual=5, margin=+2
 """
         findings = _sample_findings()
         inc_mod.save_incidents("run-001", findings, evidence_text=evidence_text)
@@ -219,9 +219,9 @@ class TestSaveIncidents:
         ip_inc = [i for i in incidents if i["entity"] == "10.0.1.55"][0]
 
         assert "lolbin_abuse" in admin_inc["evidence"]
-        assert "impossible_travel" in ip_inc["evidence"]
+        assert "multiple_source_ips" in ip_inc["evidence"]
         # Each incident should only have its own entity's evidence
-        assert "impossible_travel" not in admin_inc["evidence"]
+        assert "multiple_source_ips" not in admin_inc["evidence"]
         assert "lolbin_abuse" not in ip_inc["evidence"]
 
 

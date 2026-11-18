@@ -108,7 +108,7 @@ export const DETECTION_METHODS: DetectionMethod[] = [
   {
     number: 5,
     name: 'Impossible travel',
-    typeLabel: 'impossible_travel',
+    typeLabel: 'multiple_source_ips',
     category: 'statistical',
     fn: 'detection.py §5 (multi_ip)',
     logs: ['auth', 'network', 'dns'],

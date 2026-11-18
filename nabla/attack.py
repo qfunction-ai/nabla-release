@@ -32,7 +32,7 @@ ANOMALY_TO_TECHNIQUES = {
     "brute_force_attempt": ["T1110"],
     "privilege_escalation": ["T1078", "T1548"],
     "off_hours_activity": ["T1078"],
-    "impossible_travel": ["T1078", "T1021"],
+    "multiple_source_ips": ["T1078", "T1021"],
     "suspicious_domain": ["T1071", "T1568"],
     "activity_spike": ["T1059", "T1036"],
     "z_score_spike": ["T1059"],

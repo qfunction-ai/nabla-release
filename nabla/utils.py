@@ -57,11 +57,10 @@ def is_off_hours(timestamp: str) -> bool:
     Returns:
         True if the hour is < 6 or >= 22.
     """
-    try:
-        hour = int(timestamp[11:13])
-        return hour < 6 or hour >= 22
-    except (ValueError, IndexError):
-        return False
+    hour = _parse_hour(timestamp)
+    if hour < 0:
+        return False  # unparseable: not off-hours (A18)
+    return hour < 6 or hour >= 22
 
 
 # ---------------------------------------------------------------------------
@@ -149,3 +148,15 @@ SEVERITY_ORDER: dict[str, int] = {
     "info": 4,
 }
 
+
+
+def _parse_hour(ts: str) -> int:
+    """Hour-of-day (UTC) from an ISO timestamp, robust to offsets (A18).
+
+    Replaces int(ts[11:13]) slices, which assume a specific ISO layout and
+    read the LOCAL hour on offset timestamps instead of UTC.
+    """
+    dt = parse_iso_timestamp(str(ts))
+    if dt is None:
+        return -1  # unparseable: callers treat as not-off-hours
+    return dt.astimezone(timezone.utc).hour

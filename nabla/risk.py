@@ -49,7 +49,7 @@ METHOD_CATEGORIES: dict[str, list[str]] = {
     "brute_force_attempt": ["account_compromise"],
     "z_score_spike": ["insider_threat"],
     "off_hours_activity": ["insider_threat"],
-    "impossible_travel": ["account_compromise"],
+    "multiple_source_ips": ["account_compromise"],
     "activity_spike": ["insider_threat"],
     "lolbin_abuse": ["lateral_movement"],
     "suspicious_parent_child": ["lateral_movement"],

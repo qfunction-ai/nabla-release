@@ -216,6 +216,7 @@ class TestStagingPattern:
                 "user": "alice",
                 "action": "network_connect",
                 "type": "network",
+                "bytes": 50_000_000,  # A21: sizeable transfer
                 "timestamp": (base_time + timedelta(minutes=5)).isoformat(),
             },
         ]
@@ -229,6 +230,21 @@ class TestStagingPattern:
 # ---------------------------------------------------------------------------
 
 class TestDetectExfiltration:
+    def test_small_transfer_no_archive_suppressed(self):
+        """A21: create->small-transfer is ordinary work; no alert."""
+        base_time = datetime.now(timezone.utc)
+        entries = [
+            {"user": "bob", "action": "create", "target_file": "notes.txt",
+             "timestamp": base_time.isoformat()},
+            {"user": "bob", "action": "network_connect", "type": "network",
+             "bytes": 500_000,
+             "timestamp": (base_time + timedelta(minutes=5)).isoformat()},
+        ]
+        anomalies = detect_exfiltration(entries, thresholds={})
+        staging = [a for a in anomalies if a.get("detection_method") == "exfil_staging"]
+        assert len(staging) == 0, f"ordinary work flagged: {staging}"
+
+
     def test_empty_entries(self):
         anomalies = detect_exfiltration(entries=[], thresholds={})
         assert anomalies == []

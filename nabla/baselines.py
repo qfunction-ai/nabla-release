@@ -655,7 +655,8 @@ class EntityProfileStore:
             ts = e.get("timestamp", "")
             if ts:
                 try:
-                    hour = int(ts[11:13])
+                    from nabla.utils import _parse_hour
+                    hour = _parse_hour(ts)
                     profile.typical_hours.add(hour)
                 except (ValueError, IndexError):
                     pass  # silent by design: unparseable timestamp in profile data (2026-09 sweep)
@@ -683,7 +684,7 @@ class EntityProfileStore:
         # Off-hours ratio
         off_hours = sum(
             1 for e in entries
-            if e.get("timestamp", "")[11:13]
+            if _parse_hour(e.get("timestamp", "")) >= 0
             and is_off_hours(e.get("timestamp", ""))
         )
         if len(entries) > 0:

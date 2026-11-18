@@ -49,7 +49,7 @@ ANOMALY_TO_PHASES: dict[str, list[str]] = {
     "brute_force_attempt": ["credential_access"],
     "failed_login_ratio": ["credential_access"],
     "off_hours_activity": ["initial_access"],
-    "impossible_travel": ["initial_access", "lateral_movement"],
+    "multiple_source_ips": ["initial_access", "lateral_movement"],
     "multi_ip": ["initial_access", "lateral_movement"],
     "activity_spike": ["execution"],
     "lolbin_abuse": ["execution", "defense_evasion"],
@@ -466,6 +466,16 @@ def should_flag_chain(
     Returns:
         True if the chain should be flagged.
     """
+    # A14: chain length counts DISTINCT events (Phase 2 IDs dedup the same
+    # underlying event re-detected by multiple methods), and single-source
+    # chains need method diversity — three detectors firing on one event is
+    # one signal, not a campaign
+    distinct_ids = {e.get("anomaly_id") or id(e) for e in chain.events}
+    if len(distinct_ids) < min_chain_length:
+        return False
+    methods = {e.get("detection_method", e.get("type", "")) for e in chain.events}
+    if len(distinct_ids) == 1 and len(methods) < 2:
+        return False
     if len(chain.events) < min_chain_length:
         return False
 

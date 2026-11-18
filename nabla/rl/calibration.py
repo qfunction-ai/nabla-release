@@ -84,7 +84,7 @@ METHOD_TO_THRESHOLD = {
 # Methods that fire on deterministic signatures — no threshold to tune.
 STATIC_DETECTORS = {
     "pre_flagged", "known_attack_script", "attack_script", "renamed_attack_tool",
-    "failed_login_ratio", "impossible_travel", "exfil_destination", "exfil_volume",
+    "failed_login_ratio", "multiple_source_ips", "exfil_destination", "exfil_volume",
     "exfil_staging", "integrity_anomaly", "registry_abuse", "network_anomaly",
     "suspicious_path", "enumeration", "cusum", "ewma", "action_sequence",
     "gcn_lof", "provenance", "temporal_chain", "peer_group_deviation",
