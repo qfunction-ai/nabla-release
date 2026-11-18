@@ -626,17 +626,13 @@ class EntityProfileStore:
         """
         profile = self.get_or_create_user(entity_id)
         profile.last_seen = _now_iso()
-        profile.observation_count += 1
         from nabla.config import get_settings as _gs
         warm_up_observations = _gs().entity_warmup_observations
 
-        # A10 quarantine: when the pipeline is in DETECTION phase, this
-        # batch's events may be anomalous (the run that produced them
-        # flagged the entity). Absorb into EWMA/sets ONLY if the batch is
-        # not quarantined. Quarantine is set by flag_quarantine() when
-        # detection fires; released by dispositions per the truth table
-        # (false_positive/benign_true_positive -> release; true_positive ->
-        # hold; none -> TTL-release on the DATA clock, default 7 days).
+        # A10/R6 quarantine: absorb ONLY if not held. Held batches go to the
+        # PENDING store (R6: hold, don't discard — an FP disposition applies
+        # them later); warm-up no longer advances on held data (R6: the
+        # increment moved after this branch).
         if (
             self._is_quarantined(entity_id)
             # Cold entities absorb regardless: quarantine protects a WARM
@@ -647,7 +643,13 @@ class EntityProfileStore:
             and profile.observation_count > warm_up_observations
         ):
             self._bump_quarantine_clock(entity_id)
-            return  # sets/EWMA untouched while held
+            try:
+                hold_pending(entity_id, entries)
+            except Exception:
+                pass  # silent by design: pending-store failure must not break the run (round-3 sweep)
+            return  # sets/EWMA/observation_count untouched while held
+
+        profile.observation_count += 1
 
         # Event RATE EWMA (R4): hour-bucketed observation rate — batch-span
         # division swung wildly on scheduler-sized batches (2 events/1min =
@@ -995,22 +997,26 @@ def flag_quarantine(entity_ids: list[str], data_clock: "datetime|None" = None) -
     now = (data_clock or datetime.now(timezone.utc)).isoformat()
     for eid in entity_ids:
         ent = q.get(eid, {})
-        if not ent.get("held"):
-            ent.update({"held": True, "since": now, "batches_held": ent.get("batches_held", 0)})
+        if not _is_quarantined(eid):  # R6: new OR TTL-expired — (re)arm
+            ent.update({"held": True, "since": now,
+                        "batches_held": ent.get("batches_held", 0),
+                        "indefinite": ent.get("indefinite", False)})
         q[eid] = ent
     _save_quarantine(q)
 
 
-def release_quarantine(entity_id: str) -> None:
-    """Disposition true_positive|benign_true_positive|false_positive release
-    (TP events stay out via flag QuARANTINE hold instead — see truth table):
-    FP/BTP release immediately; TP keeps held (confirmed attack never
-    enters baselines)."""
+def release_quarantine(entity_id: str, data_clock: "datetime | None" = None) -> None:
+    """FP/BTP disposition: release the hold (and apply any pending batches —
+    see apply_pending). TP keeps held via hold_quarantine (confirmed attack
+    never enters baselines). R6: released_at stamps NOW, not the original
+    since (the review's minor catch)."""
+    from datetime import datetime, timezone
     q = _load_quarantine()
     ent = q.get(entity_id)
     if ent:
         ent["held"] = False
-        ent["released_at"] = ent.get("since")
+        ent["indefinite"] = False
+        ent["released_at"] = (data_clock or datetime.now(timezone.utc)).isoformat()
         _save_quarantine(q)
 
 
@@ -1024,12 +1030,82 @@ def hold_quarantine(entity_id: str) -> None:
         _save_quarantine(q)
 
 
-def apply_disposition_to_quarantine(entity_id: str, disposition: str) -> None:
-    """The four-row truth table (plan stage 2, review REQUIRED 1)."""
+_PENDING_CAP = 5  # held batches per entity (R6: hold, don't discard)
+
+
+def _pending_file() -> "Path":
+    from pathlib import Path
+    from nabla.config import get_settings
+    return Path(get_settings().data_dir) / "baseline_pending.json"
+
+
+def _load_pending() -> dict:
+    p = _pending_file()
+    if p.exists():
+        import json as _json
+        return _json.loads(p.read_text() or "{}")
+    return {}
+
+
+def _save_pending(pend: dict) -> None:
+    import json as _json
+    _pending_file().write_text(_json.dumps(pend, indent=2))
+
+
+def hold_pending(entity_id: str, entries: list[dict]) -> None:
+    """Hold a quarantined entity's batch for later application (R6).
+
+    Capped per entity; the newest batches survive (the oldest overflow
+    drops — a compromise recorded here: attack-length bursts beyond the
+    cap lose their earliest batches if never dispositioned).
+    """
+    pend = _load_pending()
+    batches = pend.setdefault(entity_id, [])
+    batches.append(entries)
+    if len(batches) > _PENDING_CAP:
+        batches[:] = batches[-_PENDING_CAP:]
+    _save_pending(pend)
+
+
+def apply_pending(entity_id: str, store: "EntityProfileStore") -> int:
+    """FP/BTP disposition: the held data was NORMAL — apply it to the
+    baseline. Returns batches applied. Bucket semantics (review STRONG 2):
+    the pending entries merge into the hours they span via the same
+    observation_rate path update_user uses (single merged application;
+    no double-count — each held batch applies exactly once).
+    """
+    pend = _load_pending()
+    batches = pend.pop(entity_id, [])
+    _save_pending(pend)
+    for entries in batches:
+        if entity_id in store.users:
+            store.update_user(entity_id, entries)
+        else:
+            store.update_user(entity_id, entries)  # creates + absorbs
+    return len(batches)
+
+
+def discard_pending(entity_id: str) -> int:
+    """TP disposition: confirmed attack — the held data never enters."""
+    pend = _load_pending()
+    n = len(pend.pop(entity_id, []))
+    _save_pending(pend)
+    return n
+
+
+def apply_disposition_to_quarantine(entity_id: str, disposition: str,
+                                     profile_store: "EntityProfileStore | None" = None) -> None:
+    """The four-row truth table (plan stage 2, review REQUIRED 1), with the
+    R6 pending-store semantics: FP/BTP release AND apply held batches (the
+    data was normal); TP holds AND discards pending (attack never enters);
+    no-disposition rides the TTL (and the pending cap bounds the loss)."""
     if disposition in ("false_positive", "benign_true_positive"):
         release_quarantine(entity_id)
+        if profile_store is not None:
+            apply_pending(entity_id, profile_store)
     elif disposition == "true_positive":
         hold_quarantine(entity_id)
+        discard_pending(entity_id)
     # no-disposition row handled by the TTL in _is_quarantined
 
 

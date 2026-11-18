@@ -140,8 +140,10 @@ class TestA10Quarantine:
     def _env(self, tmp_path, monkeypatch):
         import nabla.baselines as B
         qfile = tmp_path / "quarantine.json"
+        pfile = tmp_path / "pending.json"
         sfile = tmp_path / "system_state.json"
         monkeypatch.setattr(B, "_quarantine_file", lambda: qfile)
+        monkeypatch.setattr(B, "_pending_file", lambda: pfile)
         import json as J
         from datetime import datetime, timezone
         sfile.write_text(J.dumps({"data_newest_ts": datetime.now(timezone.utc).isoformat()}))
@@ -219,3 +221,67 @@ def test_rate_uses_user_window_not_batch_window():
     rate_correct = 23 / user_window
     rate_buggy = 23 / batch_window
     assert rate_correct > 15.0 and rate_buggy < 1.0
+
+
+class TestR6QuarantineRound3:
+    """Round-3 R6: re-arm, pending store, warm-up not advancing."""
+
+    def _env(self, tmp_path, monkeypatch):
+        import nabla.baselines as B
+        monkeypatch.setattr(B, "_quarantine_file", lambda: tmp_path / "q.json")
+        monkeypatch.setattr(B, "_pending_file", lambda: tmp_path / "p.json")
+        sfile = tmp_path / "system_state.json"
+        import json as J
+        from datetime import datetime, timezone
+        sfile.write_text(J.dumps({"data_newest_ts": datetime.now(timezone.utc).isoformat()}))
+        return B
+
+    def test_rearm_after_ttl(self, tmp_path, monkeypatch):
+        """R6: a TTL-expired entity, re-flagged, is quarantined AGAIN."""
+        from datetime import datetime, timedelta, timezone
+        B = self._env(tmp_path, monkeypatch)
+        B.flag_quarantine(["bob"])
+        assert B._is_quarantined("bob")
+        future = datetime.now(timezone.utc) + timedelta(days=8)
+        monkeypatch.setattr(B, "_data_clock_now", lambda: future)
+        assert not B._is_quarantined("bob"), "TTL should expire"
+        # re-flag WITH the data clock at the flag moment: the new `since`
+        # stamps the clock's now, so the TTL restarts relative to it
+        B.flag_quarantine(["bob"], data_clock=future)
+        assert B._is_quarantined("bob"), "re-flag after expiry must re-arm"
+
+    def test_fp_release_applies_pending(self, tmp_path, monkeypatch):
+        """R6: held batches apply to the baseline on FP disposition."""
+        B = self._env(tmp_path, monkeypatch)
+        store = B.EntityProfileStore(str(tmp_path / "prof.json"))
+        # warm past the carve-out
+        for day in range(4):
+            store.update_user("alice", [{"user": "alice", "action": "x",
+                                        "timestamp": f"2025-01-1{day}T09:00:00Z"}] * 10)
+        before = store.get_user("alice").typical_event_count.value
+        obs_before = store.get_user("alice").observation_count
+        B.flag_quarantine(["alice"])
+        # held batches accumulate
+        store.update_user("alice", [{"user": "alice", "action": "x",
+                                     "timestamp": "2025-01-20T10:00:00Z"}] * 8)
+        assert store.get_user("alice").observation_count == obs_before, "warm-up must not advance while held"
+        # FP disposition: release + apply
+        B.apply_disposition_to_quarantine("alice", "false_positive", profile_store=store)
+        assert not B._is_quarantined("alice")
+        assert store.get_user("alice").observation_count == obs_before + 1, "applied batch advances warm-up once"
+        assert store.get_user("alice").typical_event_count.value != before
+
+    def test_tp_discards_pending(self, tmp_path, monkeypatch):
+        """R6: TP disposition discards held batches — attack never enters."""
+        B = self._env(tmp_path, monkeypatch)
+        store = B.EntityProfileStore(str(tmp_path / "prof.json"))
+        for day in range(4):
+            store.update_user("carol", [{"user": "carol", "action": "x",
+                                        "timestamp": f"2025-01-1{day}T09:00:00Z"}] * 10)
+        obs_before = store.get_user("carol").observation_count
+        B.flag_quarantine(["carol"])
+        store.update_user("carol", [{"user": "carol", "action": "x",
+                                     "timestamp": "2025-01-20T10:00:00Z"}] * 8)
+        B.apply_disposition_to_quarantine("carol", "true_positive", profile_store=store)
+        assert B._is_quarantined("carol"), "TP holds indefinitely"
+        assert store.get_user("carol").observation_count == obs_before, "TP discards pending"

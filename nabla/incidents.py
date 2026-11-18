@@ -447,8 +447,14 @@ def _apply_disposition(incident: dict, disposition: str, now: str) -> None:
     # A10 truth table: FP/BTP release the entity's baseline quarantine;
     # TP holds it (confirmed attack never enters baselines)
     try:
-        from nabla.baselines import apply_disposition_to_quarantine
-        apply_disposition_to_quarantine(incident.get("entity", ""), disposition)
+        from nabla.baselines import apply_disposition_to_quarantine, EntityProfileStore
+        try:
+            from nabla.config import get_settings as _gs
+            pstore = EntityProfileStore(_gs().entity_profiles_file)
+        except Exception:
+            pstore = None
+        apply_disposition_to_quarantine(incident.get("entity", ""), disposition,
+                                         profile_store=pstore)
     except Exception as e:
         logger.warning("Quarantine disposition failed (non-fatal): %s", e)
 
