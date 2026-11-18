@@ -239,7 +239,7 @@ def run_calibration() -> dict:
             continue
         tlabels = by_threshold.get(tname, [])
         if not tlabels:
-            report[tname] = {"status": "no_labels", "current": entry["current"]}
+            report[tname] = {"status": "pinned", "current": entry["current"], "reason": f"pinned — 0/{MIN_LABELS} labels"}
             continue
         proposed, reason = calibrate(
             tlabels, entry["current"],

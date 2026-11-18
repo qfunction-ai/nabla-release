@@ -146,10 +146,12 @@ def teardown(client: Letta | None = None) -> int:
             except Exception:
                 logger.debug("Could not delete tool %s (may already be gone)", tool.id)
 
-    # Delete shared blocks + the fork's canary block (auto-attached to every
-    # agent by letta-local; deleting here keeps teardown/bootstrap cycles clean)
+    # Delete shared blocks. The fork's __canary__ block is PRESERVED
+    # (external review D8: canary re-enabled by default — untrusted
+    # log-derived content reaches the supervisor; bootstrap deleting the
+    # canary was silently disabling it)
     from nabla.blocks import SHARED_BLOCKS
-    for label in list(SHARED_BLOCKS) + ["__canary__"]:
+    for label in list(SHARED_BLOCKS):
         blocks = client.blocks.list(label=label, limit=100)
         for block in blocks:
             try:

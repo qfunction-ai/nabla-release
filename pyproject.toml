@@ -40,13 +40,12 @@ include = ["nabla*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=nabla --cov-report=term-missing --cov-report=xml --cov-fail-under=0"
+addopts = "--cov=nabla --cov-report=term-missing --cov-report=xml --cov-fail-under=75"
 
 [tool.coverage.run]
 source = ["nabla"]
 omit = [
     "nabla/__main__.py",
-    "nabla/server.py",
 ]
 
 [tool.coverage.report]

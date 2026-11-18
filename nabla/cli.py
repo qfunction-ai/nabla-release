@@ -900,6 +900,11 @@ def _reset_files(scope: str, data_dir) -> list[str]:
         os.path.join(base, f) for f in (
             "entity_profiles.json", "entity_risk_scores.json",
             "rl_state.json", "gcn_lof_model.json", "siem_logs.jsonl",
+            # runs.json included: hash-keyed ingest resumability reads chunk
+            # keys from run records — leaving them behind after a learned
+            # reset skips re-ingesting identical files into wiped state
+            # (dry-run find, 2026-11-17)
+            "runs.json",
         )
     ] + [peer_path]
     all_files = learned_files + [

@@ -10,7 +10,9 @@ services:
       # Canary exfiltration tripwire off: zero-tool supervisor, localhost-bound,
       # single user — no injection surface; holdback taxes every chat response.
       # Default is ON in the fork; this is a deliberate local-only opt-out.
-      - LETTA_CANARY_ENABLED=false
+      # D8: canary enabled by default — untrusted log content reaches the LLM;
+      # opt out explicitly if the latency cost matters in your environment
+      - LETTA_CANARY_ENABLED=${LETTA_CANARY_ENABLED:-true}
     volumes:
       - letta_data:/root/.letta
     healthcheck:
@@ -84,7 +86,6 @@ services:
       - NABLA_SUMOLOGIC_ENDPOINT_QUERY=${NABLA_SUMOLOGIC_ENDPOINT_QUERY:-}
     volumes:
       - nabla_data:/data
-      - ./nabla:/app/nabla:ro
     depends_on:
       letta:
         condition: service_healthy

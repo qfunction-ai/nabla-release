@@ -13,13 +13,15 @@ containers, ~8 GB RAM.
 ```bash
 git clone https://github.com/qfunction-ai/nabla-release.git
 cd nabla-release
-cp .env.example .env          # set LETTA_PG_URI password; models default to Gemma
+cp .env.example .env          # set POSTGRES_PASSWORD; models default to Gemma
+ollama pull gemma4:latest && ollama pull embeddinggemma:latest   # on your Ollama host
 docker compose up -d          # first boot pulls images + models (minutes)
 curl http://localhost:8002/health
 ```
 
-On first boot, register the operator: open the UI (port 8002) and create
-the first account — the first registered user becomes the operator.
+On first boot, register the operator: open the UI at `http://localhost:3000`
+(the nginx frontend; `:8002` is the backend API) and create the first
+account — the first registered user becomes the operator.
 Registration is rate-limited to 3/minute. If you set `NABLA_SETUP_TOKEN`
 in `.env`, API access requires that token instead.
 
@@ -75,3 +77,13 @@ in-app Help documentation.
 ## License
 
 Apache 2.0 — see LICENSE. Contributions per CLA.md.
+
+## Troubleshooting: data-volume ownership
+
+Named volumes take their initial ownership from the image. If a volume was
+created by an older image with a different UID and the backend cannot write
+`/data`, run the one-off repair:
+
+```bash
+docker compose run --rm --user root nabla chown -R appuser:appgroup /data
+```

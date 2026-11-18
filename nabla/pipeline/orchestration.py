@@ -146,6 +146,7 @@ def run_pipeline(
     results = {}
     run_record = new_run(log_types=types, log_count=log_count, source=source)
     step_durations = {}
+    degradations: list[str] = []  # A22: non-fatal failures surfaced in run status
 
     try:
         # ── Step 1: Log Ingestion ──────────────────────────────
@@ -222,6 +223,7 @@ def run_pipeline(
                 logger.info("Baseline snapshot stored")
         except Exception as e:
             logger.warning("Failed to store baseline snapshot: %s", e)
+            degradations.append("baseline_snapshot")
 
         # Update entity profiles (skip for ad-hoc file uploads)
         if detection.entity_profiles is not None and not skip_baseline:
@@ -242,6 +244,7 @@ def run_pipeline(
                 )
             except Exception as e:
                 logger.warning("Failed to update entity profiles (non-fatal): %s", e)
+                degradations.append("entity_profiles")
 
         # Compute peer groups (skip for ad-hoc file uploads)
         peer_groups = None
@@ -334,6 +337,7 @@ def run_pipeline(
                     logger.info("Incident persistence: %d new incidents saved", new_incidents)
             except Exception as e:
                 logger.warning("Incident persistence failed (non-fatal): %s", e)
+                degradations.append("incident_persistence")
 
         # ── Step 4c: Update entity risk scores ──────────────────
         try:
@@ -367,6 +371,7 @@ def run_pipeline(
                 logger.info("Risk scores: %d entities above investigation cutoff (%.0f)", high_risk, settings.risk_score_investigation_cutoff)
         except Exception as e:
             logger.warning("Risk score update failed (non-fatal): %s", e)
+            degradations.append("risk_scores")
 
         # ── Step 5: RL update ──────────────────────────────────
         t0 = time.monotonic()
@@ -404,6 +409,7 @@ def run_pipeline(
 
         # Per-layer counts INCLUDING zeros (silent-swallow sweep) — a dead
         # layer reports 0 rather than vanishing from the record.
+        run_record["degradations"] = degradations  # A22: surfaced in UI as a degraded-run indicator
         run_record["layer_counts"] = {
             "base": len(detection.anomalies) if detection else 0,
             "gcn_lof": len(detection.gcn_lof_anomalies) if detection else 0,
