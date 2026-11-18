@@ -6,7 +6,7 @@ not an anomaly. Scoring them produces incidents that are always wrong, and
 those incidents bury the ones that matter.
 
 This is not a corner case. The real dataset-v1 has 13 machine principals to
-one human (`helpdeskone`), so the off-hours detector was firing on almost
+a single human analyst, so the off-hours detector was firing on almost
 entirely the wrong population.
 """
 
@@ -62,7 +62,7 @@ class TestHumansAreNotCaught:
     Excluding a real analyst from baselining silently blinds the product."""
 
     @pytest.mark.parametrize("name", [
-        "helpdeskone", "rsmith", "johnson", "smith", "brown", "williams",
+        "jdoe2", "pat.smith", "johnson", "smith", "brown", "williams",
         "a.patel", "maria.garcia", "jdoe", "admin", "administrator",
         "service.desk", "rootcause", "sven", "bintou",
     ])
@@ -87,7 +87,7 @@ class TestOverrides:
         monkeypatch.setenv("NABLA_MACHINE_ACCOUNTS", "custom-bot,other-svc")
         assert is_baselineable_user("custom-bot") is False
         assert is_baselineable_user("other-svc") is False
-        assert is_baselineable_user("helpdeskone") is True
+        assert is_baselineable_user("jdoe2") is True
 
     def test_human_override_rescues_a_false_positive(self, monkeypatch):
         """An operator who knows `ftp` is a person at their site should not
@@ -102,15 +102,15 @@ class TestOverrides:
         assert is_baselineable_user("alice") is True
 
 
-class TestRealDatasetPopulation:
-    """The predicate against the actual dataset-v1 principal list.
+class TestRepresentativePopulation:
+    """The predicate against a representative enterprise principal list.
 
     This is the regression that matters: exactly one of these is a person.
     """
 
     DATASET_PRINCIPALS = {
         "root": False, "EC2AMAZ-OCPNFK9$": False, "-": False, "adm": False,
-        "EC2AMAZ-5VH33S7$": False, "helpdeskone": True, "SYSTEM": False,
+        "EC2AMAZ-5VH33S7$": False, "helpdeskadmin": True, "SYSTEM": False,
         "bin": False, "mail": False, "ftp": False, "ec2-user": False,
         "games": False, "daemon": False, "tss": False,
     }
@@ -125,4 +125,4 @@ class TestRealDatasetPopulation:
 
     def test_exactly_one_human_in_the_dataset(self):
         humans = [n for n in self.DATASET_PRINCIPALS if is_baselineable_user(n)]
-        assert humans == ["helpdeskone"]
+        assert humans == ["helpdeskadmin"]

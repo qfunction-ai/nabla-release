@@ -161,7 +161,7 @@ class TestReset:
     def test_reset_all(self, runner, tmp_path):
         from nabla.cli import app
         self._seed(tmp_path)
-        (tmp_path / "users.json").write_text('{"rsmith": {}}')
+        (tmp_path / "users.json").write_text('{"opsuser": {}}')
         s = _settings(tmp_path)
         with patch("nabla.cli.get_settings", return_value=s), \
              patch("nabla.config.get_settings", return_value=s):

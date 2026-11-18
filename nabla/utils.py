@@ -72,8 +72,9 @@ def is_off_hours(timestamp: str) -> bool:
 # not an anomaly. Scoring them produces incidents that are always wrong, and
 # those incidents bury the ones that matter.
 #
-# The real dataset-v1 is 13 machine principals to 1 human (`helpdeskone`), so
-# this is not a corner case — it is most of the population.
+# Real enterprise telemetry is overwhelmingly machine principals to a
+# handful of humans, so this is not a corner case — it is most of the
+# population.
 #
 # The rules below are ordered from unambiguous to heuristic. Anything matched
 # is EXCLUDED from behavioral baselining, never hidden: callers log what they
