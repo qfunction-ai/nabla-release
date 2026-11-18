@@ -66,7 +66,6 @@ def extract_state(anomaly_queue_text: str, findings_text: str) -> dict:
             "dismissed_count": int,
         }
     """
-    from nabla.rl.reward import parse_findings
 
     anomaly_count = extract_anomaly_count(anomaly_queue_text)
     method_counts = extract_method_counts(anomaly_queue_text)

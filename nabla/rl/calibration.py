@@ -116,24 +116,15 @@ def feedback_store_path() -> Path:
 
 
 def write_labels(records: list[dict]) -> None:
-    """Write label records; earlier records for the same anomaly_id are
-    flagged superseded (STRONG 2: last disposition wins, history retained)."""
+    """Append label records (R20: append-only, lock-guarded — no read-modify-
+    rewrite races). Supersession is computed at READ time (current_labels
+    takes the last by file order)."""
+    from nabla.persistence import file_lock
     path = feedback_store_path()
-    existing = []
-    if path.exists():
-        for line in path.read_text().splitlines():
-            if line.strip():
-                existing.append(json.loads(line))
-    new_ids = {r["anomaly_id"] for r in records}
-    out = []
-    for r in existing:
-        if r["anomaly_id"] in new_ids:
-            r["superseded"] = True
-        out.append(r)
-    out.extend(records)
-    with path.open("w") as f:
-        for r in out:
-            f.write(json.dumps(r) + "\n")
+    with file_lock(str(path)):
+        with path.open("a") as f:
+            for r in records:
+                f.write(json.dumps(r) + "\n")
 
 
 def current_labels() -> list[dict]:
@@ -176,8 +167,10 @@ def load_calibration() -> dict:
 
 
 def save_calibration(store: dict) -> None:
+    from nabla.persistence import atomic_write_json, file_lock
     path = calibration_store_path()
-    path.write_text(json.dumps(store, indent=2))
+    with file_lock(str(path)):
+        atomic_write_json(str(path), store)
 
 
 def effective_thresholds() -> dict[str, float]:

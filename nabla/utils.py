@@ -159,7 +159,16 @@ def _parse_hour(ts: str) -> int:
     dt = parse_iso_timestamp(str(ts))
     if dt is None:
         return -1  # unparseable: callers treat as not-off-hours
-    return dt.astimezone(timezone.utc).hour
+    # R17: convert to the SITE timezone before taking the hour (UTC default
+    # preserved; a fixed UTC window mislabeled every non-UTC organization)
+    try:
+        from zoneinfo import ZoneInfo
+        from nabla.config import get_settings
+        tz_name = get_settings().timezone or "UTC"
+        target = ZoneInfo(tz_name) if tz_name != "UTC" else timezone.utc
+    except Exception:
+        target = timezone.utc
+    return dt.astimezone(target).hour
 
 
 def hour_is_unusual(counts: dict[int, float], hour: int,

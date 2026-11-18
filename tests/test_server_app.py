@@ -22,7 +22,6 @@ def test_health_endpoint():
 def test_middleware_stack():
     """Auth middleware is present (cookie sessions)."""
     from nabla.auth import require_user
-    deps = str(app.routes)
-    assert "require_user" in deps or True  # route-level Depends presence
+    # R16: the can't-fail 'or True' removed — the 401 below is the real check
     r = TestClient(app).get("/api/entities")
     assert r.status_code in (401, 403), f"unauthenticated access should be rejected: {r.status_code}"

@@ -236,26 +236,6 @@ def _parse_ts(ts: str) -> datetime | None:
 
 
 
-def _clamp_thresholds(thresholds: dict[str, float]) -> dict[str, float]:
-    """Clamp threshold values to their allowed ranges.
-
-    Args:
-        thresholds: Dict of threshold name -> value.
-
-    Returns:
-        Dict with values clamped to their allowed ranges.
-    """
-    for name, (lo, hi) in _THRESHOLD_RANGES.items():
-        if name in thresholds:
-            v = thresholds[name]
-            if v < lo:
-                logger.warning("Clamping %s: %.4f → %.4f (min)", name, v, lo)
-                thresholds[name] = lo
-            elif v > hi:
-                logger.warning("Clamping %s: %.4f → %.4f (max)", name, v, hi)
-                thresholds[name] = hi
-    return thresholds
-
 
 def parse_lolbin_block(block_text: str) -> list[tuple[str, list[str], list[str]]]:
     """Parse the lolbin_db block text into LOLBIN signatures.

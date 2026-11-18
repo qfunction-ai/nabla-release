@@ -94,10 +94,12 @@ class TestDispositionRoundTrip:
         labels = current_labels()
         assert len(labels) == 1
         assert labels[0]["disposition"] == "false_positive"
-        # history retained with supersede flag
+        # R20: history retained as append-only records; supersession is
+        # READ-time (last-by-file-order wins), not a written flag
         raw = [json.loads(l) for l in feedback_store_path().read_text().splitlines() if l.strip()]
         assert len(raw) == 2
-        assert raw[0].get("superseded") is True
+        assert raw[0]["disposition"] == "true_positive"
+        assert raw[1]["disposition"] == "false_positive"
 
 
 class TestCalibration:

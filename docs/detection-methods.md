@@ -1,6 +1,6 @@
 # Nabla Detection Methods — Reference
 
-Source of truth: `nabla/detection.py` (`detect_anomalies()`), `nabla/gcn_lof.py`, `nabla/exfiltration.py`, `nabla/provenance.py`, `nabla/temporal.py`. Threshold defaults from `nabla/rl/thresholds.py` (`THRESHOLDS`: name → min, max, step, default). All thresholds are RL-tunable (tabular Q-learning) unless marked **static**; "sensitivity" values below 0 disable a detector (all sensitivities default 0.7 except `unusual_process_sensitivity` = 0.5).
+Source of truth: `nabla/detection.py` (`detect_anomalies()`), `nabla/gcn_lof.py`, `nabla/exfiltration.py`, `nabla/provenance.py`, `nabla/temporal.py`. Threshold defaults from `nabla/rl/thresholds.py` (`THRESHOLDS`: name → min, max, step, default). All thresholds are RL-tunable (tabular label-driven calibration) unless marked **static**; "sensitivity" values below 0 disable a detector (all sensitivities default 0.7 except `unusual_process_sensitivity` = 0.5).
 
 ## Baseline phase
 
@@ -46,8 +46,8 @@ During BASELINE phase, `detect_anomalies()` suppresses every block that needs st
 - **False positives:** Night-shift staff, global timezone offsets, and batch jobs — the fixed UTC window ignores local business hours (entity baselines fix this once warm).
 - **Baseline phase:** suppressed
 
-### 5. impossible_travel
-- **Function:** `multi_ip` → type `impossible_travel` (`detection.py` §5)
+### 5. multiple_source_ips
+- **Function:** `multi_ip` → type `multiple_source_ips` (`detection.py` §5)
 - **Logs:** auth/network/dns (any event carrying a routable source IP)
 - **Catches:** One account appearing from many distinct addresses — credential sharing, proxying, or geographically impossible logins.
 - **How:** Collects routable source IPs (`is_routable_ip`) per user; flags when unique-IP count ≥ `multi_ip_count` (default **3**, RL range 2–6) at `high` severity. Despite the name there is **no geo/velocity math** — it is a pure distinct-IP-count heuristic; the alert lists all IPs. Warm entity profiles switch this to `entity_new_ip` (#24).

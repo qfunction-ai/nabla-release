@@ -366,7 +366,7 @@ def _write_environment_context_block(client: Letta, agents: dict, result: Detect
                 ts = str(e.get("timestamp", ""))
                 from nabla.utils import _parse_hour
                 hour = _parse_hour(ts)
-                if hour < 6 or hour >= 22:
+                if 0 <= hour < 6 or hour >= 22:  # R17: -1 (unparseable) is NOT off-hours
                     offhours_by_entity[ent] += 1
             for ent, count in events_by_entity.items():
                 if ent in (result.anomalous_entities or set()):

@@ -15,7 +15,7 @@ git clone https://github.com/qfunction-ai/nabla-release.git
 cd nabla-release
 cp .env.example .env          # set POSTGRES_PASSWORD; models default to Gemma
 ollama pull gemma4:latest && ollama pull embeddinggemma:latest   # on your Ollama host
-docker compose up -d          # first boot pulls images + models (minutes)
+docker compose up -d          # first boot pulls images (minutes)
 curl http://localhost:8002/health
 ```
 

@@ -1,6 +1,6 @@
 services:
   letta:
-    image: ghcr.io/qfunction-ai/letta-local:0.16.31
+    image: ghcr.io/qfunction-ai/letta-local:0.16.31@sha256:cbb12673092261e5ef0654ec6805a9c3b0f9488cecc48b0e7df2dd431a53ce88
     ports:
       - "127.0.0.1:8284:8283"
     environment:

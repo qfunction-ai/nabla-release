@@ -55,6 +55,21 @@ jobs:
       - name: Run tests
         run: cd frontend && npm test
 
+      - name: Env forwarding guard (R22)
+        run: |
+          cp .env.example .env
+          cfg="$(docker compose config 2>/dev/null || true)"
+          if [ -z "$cfg" ]; then
+            # docker unavailable on runner: static fallback — grep the compose
+            cfg="$(cat docker-compose.yml)"
+          fi
+          missing=0
+          for k in $(grep -oE '^NABLA_[A-Z_]+' .env.example); do
+            echo "$cfg" | grep -q "$k" || { echo "not forwarded to nabla: $k"; missing=1; }
+          done
+          rm -f .env
+          exit $missing
+
       - name: Build check
         run: cd frontend && npm run build
 

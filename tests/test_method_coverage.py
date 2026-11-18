@@ -48,3 +48,15 @@ def test_no_dead_map_keys():
     emitted = _emitted_methods()
     dead = set(METHOD_TO_THRESHOLD) - emitted
     assert not dead, f"map keys never emitted (dead): {sorted(dead)}"
+
+
+def test_env_example_keys_are_settings():
+    """R22: every NABLA_* key in .env.example is a Settings field."""
+    import re as _re
+    from pathlib import Path as _P
+    from nabla.config import Settings
+    env = (ROOT / ".env.example").read_text()
+    keys = set(_re.findall(r'^(NABLA_[A-Z_]+)', env, _re.M))
+    fields = set(Settings.model_fields.keys())
+    bad = {k for k in keys if k.removeprefix("NABLA_").lower() not in fields}
+    assert not bad, f"env keys without Settings fields: {sorted(bad)}"

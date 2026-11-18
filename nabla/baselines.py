@@ -1000,7 +1000,10 @@ def _load_quarantine() -> dict:
 
 def _save_quarantine(q: dict) -> None:
     import json as _json
-    _quarantine_file().write_text(_json.dumps(q, indent=2))
+    from nabla.persistence import atomic_write_json, file_lock
+    p = str(_quarantine_file())
+    with file_lock(p):
+        atomic_write_json(p, q)
 
 
 def flag_quarantine(entity_ids: list[str], data_clock: "datetime|None" = None) -> None:
@@ -1064,7 +1067,10 @@ def _load_pending() -> dict:
 
 def _save_pending(pend: dict) -> None:
     import json as _json
-    _pending_file().write_text(_json.dumps(pend, indent=2))
+    from nabla.persistence import atomic_write_json, file_lock
+    p = str(_pending_file())
+    with file_lock(p):
+        atomic_write_json(p, pend)
 
 
 def hold_pending(entity_id: str, entries: list[dict]) -> None:
