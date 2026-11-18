@@ -48,19 +48,21 @@ class TestEWMAProfile:
 
     def test_z_score_calculation(self):
         """Z-score computes correctly for known values."""
-        ewma = EWMAProfile(value=100.0, variance=25.0)  # std = 5
+        ewma = EWMAProfile(value=100.0, variance=25.0)  # std = max(5, 10) = 10 (R4 floor)
         z = ewma.z_score(110.0)
-        assert abs(z - 2.0) < 0.01
+        assert abs(z - 1.0) < 0.01  # Poisson-floored
 
     def test_std_property(self):
         """std returns sqrt of variance."""
         ewma = EWMAProfile(variance=9.0)
         assert abs(ewma.std - 3.0) < 0.01
 
-    def test_std_zero_variance(self):
-        """std returns 0.01 when variance is zero (avoids division by zero)."""
-        ewma = EWMAProfile(variance=0.0)
-        assert ewma.std == 0.01
+    def test_std_zero_variance_poisson_floor(self):
+        """R4: zero variance floors at sqrt(value) — Poisson noise, not 0.01."""
+        ewma = EWMAProfile(value=36.0, variance=0.0)
+        assert abs(ewma.std - 6.0) < 0.01  # sqrt(36)
+        cold = EWMAProfile(value=0.0, variance=0.0)
+        assert abs(cold.std - 0.01) < 0.001  # below-count-regime: plain floor
 
     def test_serialization_roundtrip(self):
         """EWMAProfile survives dict serialization roundtrip."""
@@ -286,9 +288,8 @@ class TestEntityProfileStore:
         store.update_user("jsmith", entries)
         profile = store.get_user("jsmith")
         assert profile.observation_count == 1
-        # A9: first observation seeds the EWMA exactly (bias-corrected);
-        # A8: the unit is events-per-hour over the batch span (14h)
-        assert profile.typical_event_count.value == pytest.approx(3 / 14, abs=0.05)
+        # R4: hour-bucketed rate — 3 events across 3 distinct hours = 1.0/hr
+        assert profile.typical_event_count.value == pytest.approx(1.0, abs=0.05)
         assert "8.8.8.8" in profile.typical_ips
         assert "1.2.3.4" in profile.typical_ips
         # Private IPs should NOT be stored
@@ -353,9 +354,8 @@ class TestEntityProfileStore:
         assert "wininit" in profile.typical_parent_processes
         assert "admin" in profile.typical_users
         assert "system" in profile.typical_users
-        # A8: process RATE — 2 distinct processes over the 1-minute batch span
-        # (clamped to 1/60h) = 120/hr
-        assert profile.typical_process_count.value == pytest.approx(120.0, abs=1.0)
+        # R4: hour-bucketed — 2 processes within hour 9 = one bucket -> 2.0/hr
+        assert profile.typical_process_count.value == pytest.approx(2.0, abs=0.05)
 
     def test_update_host_network(self, tmp_path):
         """update_host tracks network destinations and ports."""

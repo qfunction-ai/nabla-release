@@ -559,13 +559,10 @@ def detect_anomalies(
                 if profile and profile.observation_count >= 3:
                     # A8: rate vs rate — the run's events-per-hour against
                     # the per-hour EWMA (count-vs-rate compared mismatched units)
-                    from nabla.baselines import _observation_window_hours
-                    # A8 fix (stage-4 rehearsal catch #4): the window must be
-                    # THIS USER's events' span, not the full batch's — mixed
-                    # batches diluted per-user rates to near-zero (smith's
-                    # 23 events over his 1.4h became 23/24h under the noise
-                    # users' span; z went negative and the detector died)
-                    run_rate = count / _observation_window_hours(events)
+                    from nabla.baselines import observation_rate
+                    # R4 (round 3): hour-bucketed per-user rate — the batch-span
+                    # divisor (even user-scoped) swung on scheduler-sized batches
+                    run_rate = observation_rate(events)
                     entity_z = profile.typical_event_count.z_score(run_rate)
                     if entity_z > entity_z_sigma:
                         anomalies.append({
@@ -775,8 +772,8 @@ def detect_anomalies(
             if entity_profiles is not None and entity_profiles.warm_up_complete("user", user):
                 profile = entity_profiles.get_user(user)
                 if profile and profile.typical_event_count.value > 0:
-                    from nabla.baselines import _observation_window_hours
-                    run_rate = count / _observation_window_hours(events)  # user's span (A8 fix)
+                    from nabla.baselines import observation_rate
+                    run_rate = observation_rate(events)  # R4 bucketed
                     entity_spike = run_rate > profile.typical_event_count.value * spike_mult
                     if entity_spike:
                         anomalies.append({
@@ -1763,7 +1760,11 @@ def detect_anomalies(
                 for i, c in enumerate(counts):
                     if i == 0:
                         continue
-                    running_std = running_var ** 0.5 if running_var > 0 else 1.0
+                    # R4 (round 3): Poisson floor on the inline EWMA std too —
+                    # quiet-bin stretches left running_var ~0 and normal count
+                    # jitter fired 'ewma_drift' on healthy users (the residual
+                    # noise the harness's separation probe isolated)
+                    running_std = max(running_var ** 0.5, max(running_ewma, 1.0) ** 0.5)
                     running_threshold = running_ewma + ewma_sigma_mult * running_std
                     if c > running_threshold and running_threshold > 0:
                         bin_ts = sorted_bins[i][0] * _BIN_MINUTES * 60
@@ -1891,9 +1892,9 @@ def detect_anomalies(
                 # Signal 1: Event count deviation from entity EWMA
                 count = len(events)
                 if profile.typical_event_count.variance > 0:
-                    from nabla.baselines import _observation_window_hours
+                    from nabla.baselines import observation_rate
                     event_z = profile.typical_event_count.z_score(
-                        count / _observation_window_hours(events))  # user's span (A8 fix)
+                        observation_rate(events))  # R4 bucketed
                     if event_z > 1.5:  # Lower threshold for composite
                         signals += 1
                         signal_details.append(f"event_count_z={event_z:.1f}")

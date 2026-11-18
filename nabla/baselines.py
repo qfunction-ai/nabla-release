@@ -81,8 +81,19 @@ class EWMAProfile:
 
     @property
     def std(self) -> float:
-        """Current standard deviation estimate."""
-        return self.variance ** 0.5 if self.variance > 0 else 0.01
+        """Current standard deviation estimate.
+
+        R4 (round 3): Poisson-style floor for COUNT-valued EWMAs — a bare
+        variance estimate near zero let small natural variation produce huge
+        z-scores. The floor applies only when value >= 1 (the count regime);
+        ratio-valued EWMAs (auth_failure_ratio, 0-1 range) keep the plain
+        variance estimate (flooring a 0.05 ratio at std 1.0 was absurd —
+        caught by the entity_auth_failure test).
+        """
+        raw = self.variance ** 0.5
+        if self.value >= 1.0:
+            return max(raw, self.value ** 0.5)
+        return raw if raw > 0 else 0.01
 
     def z_score(self, observation: float) -> float:
         """Compute z-score of an observation against this EWMA.
@@ -638,10 +649,11 @@ class EntityProfileStore:
             self._bump_quarantine_clock(entity_id)
             return  # sets/EWMA untouched while held
 
-        # Event RATE EWMA (A8): events per hour derived from the batch's own
-        # time span — typical-ness no longer depends on run size
-        rate = len(entries) / _observation_window_hours(entries)
-        profile.typical_event_count.update(rate)
+        # Event RATE EWMA (R4): hour-bucketed observation rate — batch-span
+        # division swung wildly on scheduler-sized batches (2 events/1min =
+        # 120/hr); event-time bucketing is boundary-independent
+        from nabla.baselines import observation_rate
+        profile.typical_event_count.update(observation_rate(entries))
 
         # IPs (only publicly routable — private IPs are not useful for
         # impossible-travel detection and would cause false positives)
@@ -736,9 +748,9 @@ class EntityProfileStore:
 
         _capped_set(profile.typical_processes, _MAX_PROCESSES)
         _capped_set(profile.typical_parent_processes, _MAX_PARENT_PROCESSES)
-        # A8: per-hour rate, same as users
-        profile.typical_process_count.update(
-            len(current_processes) / _observation_window_hours(entries))
+        # R4: hour-bucketed rate, same as users
+        from nabla.baselines import observation_rate
+        profile.typical_process_count.update(observation_rate(entries))
 
         # User tracking
         current_users: set[str] = set()
@@ -801,8 +813,9 @@ class EntityProfileStore:
         profile.last_seen = _now_iso()
         profile.observation_count += 1
 
-        # Event RATE EWMA (A8): per-hour, run-size independent
-        profile.typical_event_count.update(len(entries) / _observation_window_hours(entries))
+        # R4: hour-bucketed rate, boundary-independent
+        from nabla.baselines import observation_rate
+        profile.typical_event_count.update(observation_rate(entries))
 
         # Users
         for e in entries:
@@ -889,6 +902,43 @@ def _observation_window_hours(entries: list[dict]) -> float:
     if span <= 0:
         return 1.0  # zero-span (all same instant): same 1h convention
     return min(max(span, 1.0 / 60.0), 24.0)
+
+
+def hourly_counts(entries: list[dict]) -> "dict[int, int]":
+    """Events per UTC hour-of-day of EVENT time (R4, round 3).
+
+    Bucketing by event time — not batch span — makes the rate observation
+    independent of when the scheduler happened to cut the batch. Two events
+    a minute apart land in their hour's bucket (rate 2/hour-ish over the
+    hours they span), not 120/hr against a 1-minute batch floor.
+    """
+    from nabla.utils import parse_iso_timestamp
+
+    buckets: dict[int, int] = {}
+    for e in entries:
+        dt = parse_iso_timestamp(str(e.get("timestamp", "")))
+        if dt is not None:
+            h = dt.astimezone(timezone.utc).hour
+            buckets[h] = buckets.get(h, 0) + 1
+    return buckets
+
+
+def observation_rate(entries: list[dict]) -> float:
+    """The per-hour rate observation for a batch, hour-bucketed (R4).
+
+    Mean events per active hour (hours with >= 1 event). Robust to batch
+    boundaries: a 5-minute scheduler slice of a 6/hr user reads ~6, not
+    120. Single-event batches read as 1/hr (the conservative direction —
+    understates, never overstates).
+    """
+    buckets = hourly_counts(entries)
+    if not buckets:
+        return 0.0
+    # Weight by each bucket's coverage: hours fully inside the batch count
+    # 1.0; the boundary hours count their fraction — approximated here by
+    # treating every active hour equally (the conservative simplification;
+    # partial hours understate, which is the safe direction for spikes)
+    return sum(buckets.values()) / len(buckets)
 
 
 # ---------------------------------------------------------------------------

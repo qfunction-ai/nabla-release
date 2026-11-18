@@ -580,6 +580,8 @@ def compute_risk_scores(
                 "method": method,
                 "severity": severity,
                 "timestamp": anomaly_time,
+                # R2: the UNDECAYED base stored once; decay recomputed per run
+                "base_contribution": round(contribution, 3),
                 "contribution": round(contribution, 3),
                 "categories": categories,
             }
@@ -590,16 +592,26 @@ def compute_risk_scores(
         # decaying each against the data clock
         new_categories = dict.fromkeys(THREAT_CATEGORIES, 0.0)
         survivors: list[dict] = []
-        for (method, ts), a in retained.items():
+        # R1 (round 3): iterate VALUES, never unpack keys — keys are
+        # anomaly_id strings (or legacy tuples) and unpacking a string
+        # into (method, ts) raised ValueError on every real run.
+        # R2 (round 3): decay ONCE per run from the stored UNDECAYED
+        # base — the old path stored the already-decayed contribution
+        # and decayed it again each run (compounding; ~2h memory).
+        for a in retained.values():
+            ts = a.get("timestamp", "")
+            base = a.get("base_contribution", a.get("contribution", 0.0))
             decay = _decay_factor(ts, half_life_hours, ref=ref_clock) if ts else 1.0
-            contribution = a.get("contribution", 0.0) * (decay if a.get("contribution", 0) else 1.0)
+            contribution = base * decay
             # Prune negligible (decayed below 1% of its original weight)
             if contribution < 0.05:
                 continue
-            survivors.append({**a, "contribution": round(contribution, 3)})
+            survivors.append({**a, "base_contribution": round(base, 3),
+                              "contribution": round(contribution, 3)})
             for cat in a.get("categories", []):
+                n_cats = max(len(a.get("categories", [])), 1)
                 if cat in new_categories:
-                    new_categories[cat] += contribution / len(a.get("categories", [1]))
+                    new_categories[cat] += contribution / n_cats
 
         # Compute overall as max of category scores, capped at 100
         for cat, val in new_categories.items():
@@ -639,6 +651,14 @@ def compute_risk_scores(
                 score.overall = min(score.overall * decay, _MAX_SCORE)
                 for cat in score.categories:
                     score.categories[cat] = min(score.categories[cat] * decay, _MAX_SCORE)
+                # R2: refresh the retained survivors' displayed contributions
+                # from base against the current reference (inactive entities
+                # keep accurate per-anomaly decay, not just the overall score)
+                for a in score.contributing_anomalies:
+                    base_a = a.get("base_contribution", a.get("contribution", 0.0))
+                    ts_a = a.get("timestamp", "")
+                    d_a = _decay_factor(ts_a, half_life_hours, ref=ref_clock) if ts_a else 1.0
+                    a["contribution"] = round(base_a * d_a, 3)
                 score.last_updated = now
                 score.trend = -score.overall * (1 - decay) / max(hours, 0.1)
 

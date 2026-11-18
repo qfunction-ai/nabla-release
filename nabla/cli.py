@@ -42,6 +42,7 @@ def run(
     watchlist_group: list[str] = typer.Option([], help="Watchlist groups to target (can be repeated)"),
     reset_ingestion: bool = typer.Option(False, "--reset", help="Reset ingestion state for full re-pull"),
     force: bool = typer.Option(False, "--force", help="Clear a stale pipeline lock and proceed"),
+    gcn_lof: bool = typer.Option(False, "--gcn-lof", help="Enable GCN-LOF (experimental; disabled by default per R3 — 13-18% flag rate under the current anchoring)"),
     file: str = typer.Option(None, "--file", help="Path to log file (required when source=file)"),
     format: str = typer.Option(
         None, "--format",
@@ -107,6 +108,7 @@ def run(
             file_path=file,
             file_format=format,
             column_map=column_map,
+            gcn_lof_enabled=gcn_lof,
         )
 
         typer.echo("\n=== Pipeline Results ===")
@@ -1001,7 +1003,8 @@ def ingest(
     path: str = typer.Argument(..., help="Dataset directory or single JSONL file"),
     siem_data: bool = typer.Option(False, "--siem-data", help="Treat as real captured SIEM telemetry: advances the data-span phase clock (course datasets)"),
     frozen_baseline: bool = typer.Option(False, "--frozen-baseline", help="Skip baseline/profile updates (attack-phase import: anomalies fire against the frozen baseline)"),
-    graph: bool = typer.Option(False, "--graph", help="Enable graph layers (GCN-LOF/provenance/temporal) — OFF by default for bulk import (Gate 0: OOM above ~20K events/chunk)"),
+    graph: bool = typer.Option(False, "--graph", help="Enable graph layers (provenance/temporal) — OFF by default for bulk import (Gate 0: OOM above ~20K events/chunk)"),
+    gcn_lof: bool = typer.Option(False, "--gcn-lof", help="Enable GCN-LOF (experimental; disabled by default per R3)"),
     chunk_size: int = typer.Option(15000, help="Max events per chunk when splitting large files"),
     verify: str = typer.Option(None, help="scenario.json path: after ingest, compare actual incidents against the answer key"),
 ):
@@ -1094,6 +1097,7 @@ def ingest(
                 log_count=10**9,  # no truncation
                 update_baseline=not frozen_baseline,
                 skip_graph=not graph,
+                gcn_lof_enabled=gcn_lof,
                 ingest_meta={
                     "ingest_chunks": [key],
                     "ingest_siem_data": siem_data,

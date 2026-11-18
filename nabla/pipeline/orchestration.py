@@ -108,6 +108,7 @@ def run_pipeline(
     column_map: dict[str, str] | None = None,
     update_baseline: bool = False,
     skip_graph: bool = False,
+    gcn_lof_enabled: bool = False,
     ingest_meta: dict | None = None,
 ) -> dict[str, str]:
     """Execute the full UEBA pipeline.
@@ -192,6 +193,7 @@ def run_pipeline(
             siem_entries_ingested=ingestion.siem_entries_ingested,
             effective_source=ingestion.effective_source,
             skip_graph=skip_graph,
+            gcn_lof_enabled=gcn_lof_enabled,
         )
         results["anomaly"] = (
             f"Detected {len(detection.anomalies)} anomalies "

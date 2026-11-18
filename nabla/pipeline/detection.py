@@ -59,6 +59,7 @@ def run_detection(
     siem_entries_ingested: int = 0,
     effective_source: str = "synthetic",
     skip_graph: bool = False,
+    gcn_lof_enabled: bool = False,
 ) -> DetectionResult:
     """Step 2: Anomaly Detection — deterministic analysis (no LLM).
 
@@ -170,8 +171,13 @@ def run_detection(
         phase=result.phase,
     )
 
-    # GCN-LOF relational scoring (skippable: nabla ingest --no-graph bulk mode)
-    if not skip_graph and len(all_entries) >= 3:
+    # GCN-LOF relational scoring. DISABLED BY DEFAULT (round 3, R3): the
+    # z-score/bank anchoring still compared against the 0-1 threshold —
+    # 13-18% flag rate with 77% marked high, poisoning quarantine and
+    # correlation. Re-enabled only behind the explicit knob until the
+    # percentile redesign passes the harness ceiling (<1% benign).
+    # Provenance/temporal keep their own gating (skip_graph).
+    if not skip_graph and gcn_lof_enabled and len(all_entries) >= 3:
         try:
             from nabla.gcn_lof import GCNLOFDetector
             gcn_lof = GCNLOFDetector.load(settings.gcn_lof_model_file)

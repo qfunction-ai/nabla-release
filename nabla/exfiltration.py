@@ -151,7 +151,7 @@ def _detect_volume_anomaly(
     # Count network events per user WITH the batch time span (A17: compare
     # like with like — network-events-per-hour against the per-hour baseline;
     # the old count-vs-EWMA compared mismatched units and rarely fired)
-    from nabla.baselines import _observation_window_hours
+    from nabla.baselines import observation_rate
     net_entries_by_user: dict[str, list] = {}
     for entry in entries:
         if entry.get("action") == "network_connect" or entry.get("type") == "network":
@@ -168,7 +168,7 @@ def _detect_volume_anomaly(
             continue
 
         ewma = profile.typical_event_count
-        z = ewma.z_score(count / _observation_window_hours(user_net))
+        z = ewma.z_score(observation_rate(user_net))  # R4 bucketed
         if z > sigma:
             anomalies.append({
                 "entity": user,

@@ -131,3 +131,60 @@ def test_bandit_weight_applied(tmp_path, monkeypatch):
     bandit.beta = {"brute_force": 1.0}
     w = risk._get_bandit_weights(bandit)
     assert w["brute_force"] > 1.0, f"confirmed method not boosted: {w}"
+
+
+class TestR1R2Round3:
+    def test_real_id_anomalies_flow_through_risk(self, tmp_path, monkeypatch):
+        """R1 (round 3): anomalies carrying stamped IDs must not crash risk."""
+        s = _settings(tmp_path)
+        monkeypatch.setattr("nabla.config.get_settings", lambda: s)
+        from nabla import risk
+
+        monkeypatch.setattr(risk, "_data_clock", lambda: datetime.now(timezone.utc))
+        # First run: seeds the retained store
+        anom1 = {**ANOMALY, "anomaly_id": "abc123def456ghi7", "timestamp": datetime.now(timezone.utc).isoformat()}
+        store = risk.compute_risk_scores([anom1], {"alice": "user"}, half_life_hours=24.0)
+        assert store.scores["alice"].overall > 3.0  # would have raised ValueError pre-fix
+
+    def test_single_decay_not_compounding(self, tmp_path, monkeypatch):
+        """R2 (round 3): retained contributions decay ONCE per run from base.
+
+        5-minute runs over 2 hours: the first anomaly's contribution must
+        match base * 0.5^(age/half_life) within tolerance — the old code
+        compounded decay per run (~2h effective memory).
+        """
+        s = _settings(tmp_path)
+        monkeypatch.setattr("nabla.config.get_settings", lambda: s)
+        from nabla import risk
+        from datetime import timedelta
+
+        start = datetime.now(timezone.utc)
+        monkeypatch.setattr(risk, "_data_clock", lambda: start)  # fixed clock for determinism
+
+        anom1 = {**ANOMALY, "anomaly_id": "seed-anom", "severity": "high",
+                 "confidence": 1.0, "timestamp": start.isoformat()}
+        store1 = risk.compute_risk_scores([anom1], {"alice": "user"}, half_life_hours=24.0)
+        base = store1.scores["alice"].contributing_anomalies[0].get("base_contribution")
+
+        # 24 subsequent 5-min runs, each with a DIFFERENT anomaly (so alice keeps
+        # being scored) — clock advancing 5 min per run
+        t = start
+        for i in range(24):
+            t = t + timedelta(minutes=5)
+            monkeypatch.setattr(risk, "_data_clock", lambda tt=t: tt)
+            other = {**ANOMALY, "anomaly_id": f"other-{i}", "entity": "bob",
+                     "timestamp": t.isoformat()}
+            risk.compute_risk_scores([other], {"alice": "user", "bob": "user"}, half_life_hours=24.0)
+
+        # alice's seed anomaly: age = 2h; single decay => base * 0.5^(2/24)
+        monkeypatch.setattr(risk, "_data_clock", lambda tt=t: tt)
+        storeN = risk.compute_risk_scores(
+            [{**ANOMALY, "anomaly_id": "final", "entity": "carol", "timestamp": t.isoformat()}],
+            {"alice": "user", "bob": "user", "carol": "user"}, half_life_hours=24.0)
+        alice = storeN.scores.get("alice")
+        seed = [a for a in alice.contributing_anomalies if a.get("anomaly_id") == "seed-anom"]
+        assert seed, f"seed anomaly pruned early (R2 compounding): {[a.get('anomaly_id') for a in alice.contributing_anomalies]}"
+        expected = base * 0.5 ** (2.0 / 24.0)
+        actual = seed[0].get("contribution", 0.0)
+        assert abs(actual - expected) < 0.05 * base, (
+            f"contribution {actual} vs single-decay {expected:.3f} (base {base})")
