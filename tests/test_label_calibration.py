@@ -109,12 +109,41 @@ class TestCalibration:
         assert "pinned" in reason
 
     def test_moves_with_sufficient_labels(self, env):
+        """R5 (round 3): the LOWEST meeting threshold. FP-heavy corpus with
+        FPs clustered just below current (1.8-1.99) and TPs above (2.5+):
+        the lowest t meeting precision sits just past the FP cluster —
+        tighter than current, but recall-preserving (unlike the old
+        highest-meeting rule that walked to the TPs' top)."""
         from nabla.rl import calibration
-        # 30 FPs at low scores, 10 TPs at high scores -> threshold should rise
-        labels = [{"raw_score": 1.0 + i * 0.01, "disposition": "false_positive"} for i in range(30)]
-        labels += [{"raw_score": 4.0 + i * 0.01, "disposition": "true_positive"} for i in range(10)]
+        labels = [{"raw_score": 2.10 + i * 0.01, "disposition": "false_positive"} for i in range(30)]
+        labels += [{"raw_score": 3.00 + i * 0.01, "disposition": "true_positive"} for i in range(10)]
         proposed, reason = calibration.calibrate(labels, current=2.0, min_labels=30)
-        assert proposed > 2.0, f"FP-heavy corpus should raise the threshold: {proposed}"
+        # Lowest meeting: just past the FP cluster's top (~2.39)
+        assert 2.25 <= proposed <= 2.40, (
+            f"lowest-meeting should sit just past the FP cluster: {proposed}")
+
+    def test_r5_no_raise_when_meeting(self, env):
+        """The review's gate: a set already meeting precision never raises."""
+        from nabla.rl import calibration
+        # All TPs above current: precision 100% at current
+        labels = [{"raw_score": 2.5 + i * 0.01, "disposition": "true_positive"} for i in range(40)]
+        proposed, _ = calibration.calibrate(labels, current=2.0, min_labels=30)
+        assert proposed <= 2.0, f"already-meeting set raised: {proposed}"
+
+    def test_r5_never_leaves_bounds(self, env):
+        """The review's gate: proposals clamp to [lo, hi]."""
+        from nabla.rl import calibration
+        labels = [{"raw_score": 9.0 + i * 0.01, "disposition": "true_positive"} for i in range(40)]
+        # Direct: calibrate has no bounds; run_calibration clamps — test via run
+        calibration.write_labels([{"anomaly_id": f"b{i}", "entity": "x",
+                                   "detection_method": "entity_z_score",
+                                   "raw_score": 9.0 + i * 0.01, "disposition": "false_positive",
+                                   "disposition_at": "2026-11-18T00:00:00Z",
+                                   "incident_id": "i", "run_id": "r", "supervisor_hint": None}
+                                  for i in range(40)])
+        report = calibration.run_calibration()
+        e = calibration.load_calibration()["entity_event_count_sigma"]
+        assert e["current"] <= 4.0, f"left bounds: {e['current']}"
 
     def test_step_limited(self, env):
         from nabla.rl import calibration
@@ -154,3 +183,56 @@ class TestClosedLoop:
         # And the evidence trail exists
         store = calibration.load_calibration()
         assert store["entity_event_count_sigma"]["evidence"] is not None or after == before
+
+
+class TestR8PerFindingScope:
+    def test_disposition_labels_only_finding_anomalies(self, env, monkeypatch):
+        """R8: an entity with two findings (different methods) — a disposition
+        on one labels only ITS anomalies, not the other finding's."""
+        import nabla.incidents as inc
+        import json as J
+        # Two findings for alice: one brute_force, one off_hours
+        incs = []
+        for ftype, aids, methods in [
+            ("brute_force_attempt", ["bf-1", "bf-2"], ["failed_login_ratio"]),
+            ("off_hours_activity", ["oh-1"], ["off_hours"]),
+        ]:
+            incs.append({
+                "incident_id": f"inc-{ftype}", "run_id": "r", "entity": "alice",
+                "status": "new", "finding_type": ftype,
+                "contributing_anomaly_ids": aids,
+                "contributing_anomaly_details": [
+                    {"anomaly_id": a, "method": m, "raw_score": 2.5, "threshold_in_effect": 2.0}
+                    for a, m in zip(aids, methods)
+                ],
+            })
+        (env / "incidents.json").write_text(J.dumps(incs))
+        monkeypatch.setattr(inc, "_incidents_file", lambda: str(env / "incidents.json"))
+
+        inc.update_incident("inc-brute_force_attempt", disposition="false_positive")
+
+        from nabla.rl.calibration import current_labels
+        labels = current_labels()
+        labeled_ids = {l["anomaly_id"] for l in labels}
+        assert labeled_ids == {"bf-1", "bf-2"}, (
+            f"disposition leaked beyond its finding: {labeled_ids}")
+
+
+class TestR9BanditReset:
+    def test_reset_script_exists_and_clears(self, env):
+        """R9: the one-time bandit reset (mislabel-poisoned state clears)."""
+        from nabla.rl.bandit import DetectionMethodBandit
+        from pathlib import Path
+        # Poisoned state (alpha from the mislabeled-parser era)
+        bandit = DetectionMethodBandit.__new__(DetectionMethodBandit)
+        bandit.methods = ["brute_force"]
+        bandit.alpha = {"brute_force": 50.0}
+        bandit.beta = {"brute_force": 1.0}
+        state_file = env / "rl_state.json"
+        import json as J
+        state_file.write_text(J.dumps({"bandit": {"alpha": bandit.alpha, "beta": bandit.beta}}))
+        # The reset: run the migration helper
+        from nabla.rl.calibration import reset_poisoned_bandit
+        reset_poisoned_bandit(state_file)
+        data = J.loads(state_file.read_text())
+        assert data.get("bandit", {}).get("alpha", {}).get("brute_force", 1.0) == 1.0, "alpha reset to prior"

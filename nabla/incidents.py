@@ -255,6 +255,14 @@ def save_incidents(
                 continue
 
             # New incident
+            # R8 (round 3): per-FINDING scope — dispositions label only the
+            # anomalies this finding rests on (its constituent methods), not
+            # everything the entity did that run
+            _finding_methods = {
+                m.strip()
+                for m in str(finding.get("finding_type", "")).split(",")
+                if m.strip()
+            } | {str(finding.get("finding_type", "")).strip()}
             entity_evidence = _extract_entity_evidence(evidence_text, entity)
             if not entity_evidence:
                 joined = _build_finding_evidence(finding, run_anomalies)
@@ -285,6 +293,8 @@ def save_incidents(
                     a.get("anomaly_id", "")
                     for a in (run_anomalies or [])
                     if a.get("entity", a.get("user")) == entity
+                    and (a.get("detection_method") in _finding_methods
+                         or a.get("type") in _finding_methods)
                 ][:20],
                 # Phase 3: creation-time snapshot — the label pipeline needs
                 # each anomaly's method, raw score, and the threshold that
