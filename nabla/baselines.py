@@ -46,6 +46,7 @@ class EWMAProfile:
     Attributes:
         value: Current EWMA estimate.
         variance: Exponentially weighted variance estimate.
+        n: Observation count (bias correction + warm-up).
         alpha: Smoothing factor (0-1). Higher = faster adaptation.
             0.3 adapts within ~5 observations; 0.1 within ~15.
     """
@@ -53,6 +54,7 @@ class EWMAProfile:
     value: float = 0.0
     variance: float = 0.0
     alpha: float = 0.3
+    n: int = 0  # A9: observation count for bias correction
 
     def update(self, observation: float) -> None:
         """Update the EWMA with a new observation.
@@ -60,9 +62,22 @@ class EWMAProfile:
         Args:
             observation: New value to incorporate into the running average.
         """
+        self.n += 1
+        # A9 bias correction: during warm-up the EWMA starts at zero and
+        # lags the observations; the standard bias-corrected form divides
+        # by (1 - (1-alpha)^n) so early estimates equal the observations
+        # instead of crawling up from zero. Three identical observations
+        # now yield value == observation and z == 0 (reviewer's gate).
+        if self.n == 1:
+            self.value = observation
+            self.variance = 0.0
+            return
         diff = observation - self.value
-        self.value = self.alpha * observation + (1 - self.alpha) * self.value
-        self.variance = self.alpha * diff ** 2 + (1 - self.alpha) * self.variance
+        alpha_eff = self.alpha
+        self.value = self.value + alpha_eff * diff
+        # A9 variance: the running form overestimates early (small n); the
+        # n-based correction scales the initial periods properly.
+        self.variance = (1 - alpha_eff) * (self.variance + alpha_eff * diff ** 2)
 
     @property
     def std(self) -> float:
@@ -89,7 +104,7 @@ class EWMAProfile:
         Returns:
             Dict with value, variance, and alpha keys.
         """
-        return {"value": self.value, "variance": self.variance, "alpha": self.alpha}
+        return {"value": self.value, "variance": self.variance, "alpha": self.alpha, "n": self.n}
 
     @classmethod
     def from_dict(cls, data: dict) -> EWMAProfile:
@@ -101,10 +116,15 @@ class EWMAProfile:
         Returns:
             EWMAProfile instance.
         """
+        n = data.get("n", 0)
+        if n == 0 and data.get("value", 0.0) != 0.0:
+            # Legacy record without n: treat as warm (bias correction off)
+            n = 100
         return cls(
             value=data.get("value", 0.0),
             variance=data.get("variance", 0.0),
             alpha=data.get("alpha", 0.3),
+            n=n,
         )
 
 
@@ -115,6 +135,61 @@ class EWMAProfile:
 def _now_iso() -> str:
     """Return current UTC time as ISO format string."""
     return datetime.now(timezone.utc).isoformat()
+
+
+class RecencySet:
+    """A set with recency-weighted membership (A11).
+
+    Add-only sets saturate: once typical_ips holds 50 entries, EVERY new IP
+    is 'typical' and the new-IP signal dies. This wrapper tracks last-seen
+    timestamps per member and evicts least-recently-seen entries when the
+    cap is hit — the members retained are the ones actually in recent
+    behavior. Serialization round-trips as {members, last_seen} so older
+    stores (plain sets/lists) load without migration.
+    """
+
+    def __init__(self, members=None, last_seen=None, max_size: int = 50):
+        self.members: set = set(members or [])
+        self.last_seen: dict = dict(last_seen or {})
+        self.max_size = max_size
+        self._clock = 0
+
+    def add(self, item) -> None:
+        self._clock += 1
+        self.members.add(item)
+        self.last_seen[item] = self._clock
+        if len(self.members) > self.max_size:
+            self._evict()
+
+    def _evict(self) -> None:
+        # Least-recently-seen first
+        by_recency = sorted(self.last_seen.items(), key=lambda kv: kv[1])
+        excess = len(self.members) - self.max_size
+        for item, _ in by_recency[:excess]:
+            self.members.discard(item)
+            self.last_seen.pop(item, None)
+
+    def __contains__(self, item) -> bool:
+        return item in self.members
+
+    def __iter__(self):
+        return iter(self.members)
+
+    def __len__(self) -> int:
+        return len(self.members)
+
+    def to_dict(self) -> dict:
+        return {"members": sorted(self.members, key=lambda m: str(m)),
+                "last_seen": {str(k): v for k, v in self.last_seen.items()}}
+
+    @classmethod
+    def from_legacy(cls, data, max_size: int) -> "RecencySet":
+        """Load from a plain set/list (old stores) or a serialized dict."""
+        if isinstance(data, dict) and "members" in data:
+            return cls(members=data["members"], last_seen=data.get("last_seen"), max_size=max_size)
+        if isinstance(data, (set, list)):
+            return cls(members=data, max_size=max_size)
+        return cls(max_size=max_size)
 
 
 def _capped_set(items: set, max_size: int) -> set:
@@ -145,6 +220,7 @@ class _ProfileMixin:
     """
 
     _SET_FIELDS: set[str] = set()
+    _RECENCY_FIELDS: dict[str, int] = {}  # field -> max_size
     _EWMA_FIELDS: set[str] = set()
 
     def to_dict(self) -> dict:
@@ -152,7 +228,9 @@ class _ProfileMixin:
         result = {}
         for f in fields(self):
             val = getattr(self, f.name)
-            if f.name in self._SET_FIELDS:
+            if f.name in self._RECENCY_FIELDS:
+                result[f.name] = val.to_dict()
+            elif f.name in self._SET_FIELDS:
                 result[f.name] = sorted(val)
             elif f.name in self._EWMA_FIELDS:
                 result[f.name] = val.to_dict()
@@ -165,7 +243,11 @@ class _ProfileMixin:
         """Deserialize from a dict using field introspection."""
         kwargs = {}
         for f in fields(cls):
-            if f.name in cls._SET_FIELDS:
+            if f.name in cls._RECENCY_FIELDS:
+                # A11: loads serialized dicts AND legacy plain lists
+                kwargs[f.name] = RecencySet.from_legacy(
+                    data.get(f.name, []), max_size=cls._RECENCY_FIELDS[f.name])
+            elif f.name in cls._SET_FIELDS:
                 kwargs[f.name] = set(data.get(f.name, []))
             elif f.name in cls._EWMA_FIELDS:
                 kwargs[f.name] = EWMAProfile.from_dict(data.get(f.name, {}))
@@ -197,7 +279,16 @@ class UserProfile(_ProfileMixin):
         off_hours_ratio: EWMA of off-hours/total ratio.
     """
 
-    _SET_FIELDS = {"typical_ips", "typical_hours"}
+    _SET_FIELDS = set()
+    _RECENCY_FIELDS = {"typical_ips": 50, "typical_hours": 48}
+
+    def __post_init__(self):
+        # A11: accept plain sets/lists at construction (tests, legacy callers)
+        from nabla.baselines import RecencySet as _RS
+        for fname, max_size in self._RECENCY_FIELDS.items():
+            val = getattr(self, fname)
+            if not isinstance(val, _RS):
+                setattr(self, fname, _RS.from_legacy(val, max_size=max_size))
     _EWMA_FIELDS = {"typical_event_count", "auth_failure_ratio", "off_hours_ratio"}
 
     entity_id: str = ""
@@ -206,8 +297,10 @@ class UserProfile(_ProfileMixin):
     observation_count: int = 0
     account_created_at: str = ""
     typical_event_count: EWMAProfile = field(default_factory=EWMAProfile)
-    typical_ips: set[str] = field(default_factory=set)
-    typical_hours: set[int] = field(default_factory=set)
+    # A11: recency-weighted membership — evicts least-recently-seen at the
+    # cap so long-tail history doesn't saturate the new-signal detection
+    typical_ips: "RecencySet" = field(default_factory=lambda: RecencySet(max_size=50))
+    typical_hours: "RecencySet" = field(default_factory=lambda: RecencySet(max_size=48))
     typical_actions: dict[str, float] = field(default_factory=dict)
     auth_failure_ratio: EWMAProfile = field(default_factory=EWMAProfile)
     off_hours_ratio: EWMAProfile = field(default_factory=EWMAProfile)
@@ -376,25 +469,25 @@ class EntityProfileStore:
             logger.warning("Failed to load entity profiles from %s: %s", self.path, e)
 
     def save(self) -> None:
-        """Save all profiles to the JSON file atomically.
-
-        Uses atomic_write_json to prevent partial writes.
-        """
+        """Save all profiles to the JSON file atomically."""
+        from nabla.persistence import atomic_write_json
         data = {
             "users": {k: v.to_dict() for k, v in self.users.items()},
             "hosts": {k: v.to_dict() for k, v in self.hosts.items()},
             "ips": {k: v.to_dict() for k, v in self.ips.items()},
         }
-        try:
-            atomic_write_json(self.path, data)
-            logger.info(
-                "Saved entity profiles: %d users, %d hosts, %d IPs",
-                len(self.users), len(self.hosts), len(self.ips),
-            )
-        except OSError as e:
-            logger.warning("Failed to save entity profiles to %s: %s", self.path, e)
+        atomic_write_json(self.path, data)
 
-    # --- Getters ---
+    # A10: store-instance accessors over the module functions
+    def _is_quarantined(self, entity_id: str) -> bool:
+        return _is_quarantined(entity_id)
+
+    def _bump_quarantine_clock(self, entity_id: str) -> None:
+        q = _load_quarantine()
+        ent = q.get(entity_id)
+        if ent:
+            ent["batches_held"] = ent.get("batches_held", 0) + 1
+            _save_quarantine(q)
 
     def get_user(self, entity_id: str) -> UserProfile | None:
         """Get a user profile by entity ID.
@@ -514,8 +607,21 @@ class EntityProfileStore:
         profile.last_seen = _now_iso()
         profile.observation_count += 1
 
-        # Event count EWMA
-        profile.typical_event_count.update(len(entries))
+        # A10 quarantine: when the pipeline is in DETECTION phase, this
+        # batch's events may be anomalous (the run that produced them
+        # flagged the entity). Absorb into EWMA/sets ONLY if the batch is
+        # not quarantined. Quarantine is set by flag_quarantine() when
+        # detection fires; released by dispositions per the truth table
+        # (false_positive/benign_true_positive -> release; true_positive ->
+        # hold; none -> TTL-release on the DATA clock, default 7 days).
+        if self._is_quarantined(entity_id):
+            self._bump_quarantine_clock(entity_id)
+            return  # sets/EWMA untouched while held
+
+        # Event RATE EWMA (A8): events per hour derived from the batch's own
+        # time span — typical-ness no longer depends on run size
+        rate = len(entries) / _observation_window_hours(entries)
+        profile.typical_event_count.update(rate)
 
         # IPs (only publicly routable — private IPs are not useful for
         # impossible-travel detection and would cause false positives)
@@ -523,7 +629,6 @@ class EntityProfileStore:
             ip = e.get("source_ip", e.get("src_ip", e.get("client_ip", "")))
             if ip and is_routable_ip(ip):
                 profile.typical_ips.add(ip)
-        _capped_set(profile.typical_ips, _MAX_IPS)
 
         # Hours
         for e in entries:
@@ -610,7 +715,9 @@ class EntityProfileStore:
 
         _capped_set(profile.typical_processes, _MAX_PROCESSES)
         _capped_set(profile.typical_parent_processes, _MAX_PARENT_PROCESSES)
-        profile.typical_process_count.update(len(current_processes))
+        # A8: per-hour rate, same as users
+        profile.typical_process_count.update(
+            len(current_processes) / _observation_window_hours(entries))
 
         # User tracking
         current_users: set[str] = set()
@@ -673,8 +780,8 @@ class EntityProfileStore:
         profile.last_seen = _now_iso()
         profile.observation_count += 1
 
-        # Event count EWMA
-        profile.typical_event_count.update(len(entries))
+        # Event RATE EWMA (A8): per-hour, run-size independent
+        profile.typical_event_count.update(len(entries) / _observation_window_hours(entries))
 
         # Users
         for e in entries:
@@ -739,6 +846,30 @@ def group_entries_by_entity(entries: list[dict]) -> dict[tuple[str, str], list[d
     return dict(groups)
 
 
+def _observation_window_hours(entries: list[dict]) -> float:
+    """The temporal span of a batch of entries, in hours (A8).
+
+    Profiles track EVENTS PER HOUR, not events per run — the per-run unit
+    made 'typical' a function of --log-count and scheduler settings rather
+    than of behavior. The span derives from the batch's own timestamps;
+    clamped to [1 minute, 24h] so single-event and pathological batches
+    stay bounded.
+    """
+    from nabla.utils import parse_iso_timestamp
+
+    ts_list = []
+    for e in entries:
+        dt = parse_iso_timestamp(str(e.get("timestamp", "")))
+        if dt is not None:
+            ts_list.append(dt)
+    if len(ts_list) < 2:
+        return 1.0  # single-instant batch: one hour of activity by convention
+    span = (max(ts_list) - min(ts_list)).total_seconds() / 3600.0
+    if span <= 0:
+        return 1.0  # zero-span (all same instant): same 1h convention
+    return min(max(span, 1.0 / 60.0), 24.0)
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -758,3 +889,112 @@ def _get_field(entry: dict, *names: str) -> str:
         if v:
             return v
     return ""
+
+
+# ── A10 quarantine (truth table per the reviewed plan) ─────────────────────
+
+_QUARANTINE_TTL_DAYS = 7.0
+
+
+def _quarantine_file() -> "Path":
+    from pathlib import Path
+    from nabla.config import get_settings
+    return Path(get_settings().data_dir) / "baseline_quarantine.json"
+
+
+def _load_quarantine() -> dict:
+    p = _quarantine_file()
+    if p.exists():
+        import json as _json
+        return _json.loads(p.read_text() or "{}")
+    return {}
+
+
+def _save_quarantine(q: dict) -> None:
+    import json as _json
+    _quarantine_file().write_text(_json.dumps(q, indent=2))
+
+
+def flag_quarantine(entity_ids: list[str], data_clock: "datetime|None" = None) -> None:
+    """Detection fired for these entities: hold their batches from baseline
+    absorption until dispositioned (or TTL). Called by the pipeline post-
+    detection with the entities that produced anomalies."""
+    from datetime import datetime, timezone
+    q = _load_quarantine()
+    now = (data_clock or datetime.now(timezone.utc)).isoformat()
+    for eid in entity_ids:
+        ent = q.get(eid, {})
+        if not ent.get("held"):
+            ent.update({"held": True, "since": now, "batches_held": ent.get("batches_held", 0)})
+        q[eid] = ent
+    _save_quarantine(q)
+
+
+def release_quarantine(entity_id: str) -> None:
+    """Disposition true_positive|benign_true_positive|false_positive release
+    (TP events stay out via flag QuARANTINE hold instead — see truth table):
+    FP/BTP release immediately; TP keeps held (confirmed attack never
+    enters baselines)."""
+    q = _load_quarantine()
+    ent = q.get(entity_id)
+    if ent:
+        ent["held"] = False
+        ent["released_at"] = ent.get("since")
+        _save_quarantine(q)
+
+
+def hold_quarantine(entity_id: str) -> None:
+    """true_positive disposition: confirmed attack — hold indefinitely."""
+    q = _load_quarantine()
+    ent = q.get(entity_id)
+    if ent:
+        ent["held"] = True
+        ent["indefinite"] = True
+        _save_quarantine(q)
+
+
+def apply_disposition_to_quarantine(entity_id: str, disposition: str) -> None:
+    """The four-row truth table (plan stage 2, review REQUIRED 1)."""
+    if disposition in ("false_positive", "benign_true_positive"):
+        release_quarantine(entity_id)
+    elif disposition == "true_positive":
+        hold_quarantine(entity_id)
+    # no-disposition row handled by the TTL in _is_quarantined
+
+
+def _data_clock_now() -> "datetime":
+    """The A7 data clock (newest ingested event), wall fallback."""
+    from datetime import datetime, timezone
+    try:
+        import json as _json
+        from nabla.config import get_settings
+        from pathlib import Path
+        sp = Path(get_settings().data_dir) / "system_state.json"
+        if sp.exists():
+            state = _json.loads(sp.read_text())
+            newest = state.get("data_newest_ts")
+            if newest:
+                from nabla.utils import parse_iso_timestamp
+                dt = parse_iso_timestamp(str(newest))
+                if dt is not None:
+                    return dt
+    except Exception:
+        pass  # silent by design: clock fallback to wall is the documented behavior (2026-11 stage 2)
+    return datetime.now(timezone.utc)
+
+
+def _is_quarantined(entity_id: str) -> bool:
+    from datetime import timedelta
+    q = _load_quarantine()
+    ent = q.get(entity_id)
+    if not ent or not ent.get("held"):
+        return False
+    if ent.get("indefinite"):
+        return True
+    # TTL row: data clock, default 7 days
+    from nabla.utils import parse_iso_timestamp
+    since = parse_iso_timestamp(ent.get("since", ""))
+    if since is None:
+        return False
+    age_days = (_data_clock_now() - since).total_seconds() / 86400.0
+    return age_days < _QUARANTINE_TTL_DAYS

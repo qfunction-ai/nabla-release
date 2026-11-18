@@ -96,7 +96,8 @@ class TestExtractUserFeatures:
         profile = UserProfile(entity_id="alice", observation_count=5)
         profile.typical_event_count.update(100)
         profile.typical_ips.add("1.2.3.4")
-        profile.typical_hours.update({9, 10, 11, 14, 15})
+        for h in (9, 10, 11, 14, 15):
+            profile.typical_hours.add(h)
         profile.auth_failure_ratio.update(0.1)
         profile.off_hours_ratio.update(0.05)
         profile.typical_actions = {"login": 0.5, "file_access": 0.3}

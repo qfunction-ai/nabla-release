@@ -555,7 +555,11 @@ def detect_anomalies(
             if entity_profiles is not None and entity_profiles.warm_up_complete("user", user):
                 profile = entity_profiles.get_user(user)
                 if profile and profile.observation_count >= 3:
-                    entity_z = profile.typical_event_count.z_score(count)
+                    # A8: rate vs rate — the run's events-per-hour against
+                    # the per-hour EWMA (count-vs-rate compared mismatched units)
+                    from nabla.baselines import _observation_window_hours
+                    run_rate = count / _observation_window_hours(entries)
+                    entity_z = profile.typical_event_count.z_score(run_rate)
                     if entity_z > entity_z_sigma:
                         anomalies.append({
                             "type": "entity_event_count_spike",
@@ -761,7 +765,9 @@ def detect_anomalies(
             if entity_profiles is not None and entity_profiles.warm_up_complete("user", user):
                 profile = entity_profiles.get_user(user)
                 if profile and profile.typical_event_count.value > 0:
-                    entity_spike = count > profile.typical_event_count.value * spike_mult
+                    from nabla.baselines import _observation_window_hours
+                    run_rate = count / _observation_window_hours(entries)
+                    entity_spike = run_rate > profile.typical_event_count.value * spike_mult
                     if entity_spike:
                         anomalies.append({
                             "type": "entity_activity_spike",
@@ -1869,7 +1875,9 @@ def detect_anomalies(
                 # Signal 1: Event count deviation from entity EWMA
                 count = len(events)
                 if profile.typical_event_count.variance > 0:
-                    event_z = profile.typical_event_count.z_score(count)
+                    from nabla.baselines import _observation_window_hours
+                    event_z = profile.typical_event_count.z_score(
+                        count / _observation_window_hours(entries))
                     if event_z > 1.5:  # Lower threshold for composite
                         signals += 1
                         signal_details.append(f"event_count_z={event_z:.1f}")

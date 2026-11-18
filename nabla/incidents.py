@@ -444,6 +444,14 @@ def _apply_disposition(incident: dict, disposition: str, now: str) -> None:
     incident["disposition"] = disposition
     incident["disposition_at"] = now
 
+    # A10 truth table: FP/BTP release the entity's baseline quarantine;
+    # TP holds it (confirmed attack never enters baselines)
+    try:
+        from nabla.baselines import apply_disposition_to_quarantine
+        apply_disposition_to_quarantine(incident.get("entity", ""), disposition)
+    except Exception as e:
+        logger.warning("Quarantine disposition failed (non-fatal): %s", e)
+
     from nabla.rl.calibration import write_labels
     snapshot = incident.get("contributing_anomaly_details") or []
     by_id = {a.get("anomaly_id"): a for a in snapshot if isinstance(a, dict)}

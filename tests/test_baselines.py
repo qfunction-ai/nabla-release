@@ -103,15 +103,19 @@ class TestUserProfile:
         assert restored.entity_id == "jsmith"
         assert restored.observation_count == 5
         assert restored.account_created_at == "2025-01-01T00:00:00+00:00"
-        assert restored.typical_ips == {"10.0.1.50", "10.0.1.100"}
-        assert restored.typical_hours == {8, 9, 10, 14, 15}
+        # A11: recency sets compare by membership
+        assert set(restored.typical_ips) == {"10.0.1.50", "10.0.1.100"}
+        assert set(restored.typical_hours) == {8, 9, 10, 14, 15}
         assert restored.typical_actions == {"login": 0.6, "logout": 0.4}
 
-    def test_sets_serialized_as_sorted_lists(self):
-        """Sets are serialized as sorted lists for deterministic JSON."""
-        profile = UserProfile(typical_ips={"c", "a", "b"})
+    def test_recency_sets_serialized_with_members(self):
+        """A11: typical_ips/hours serialize as {members, last_seen} dicts."""
+        profile = UserProfile()
+        profile.typical_ips.add("c")
+        profile.typical_ips.add("a")
+        profile.typical_ips.add("b")
         d = profile.to_dict()
-        assert d["typical_ips"] == ["a", "b", "c"]
+        assert d["typical_ips"]["members"] == ["a", "b", "c"]
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +286,9 @@ class TestEntityProfileStore:
         store.update_user("jsmith", entries)
         profile = store.get_user("jsmith")
         assert profile.observation_count == 1
-        assert profile.typical_event_count.value == pytest.approx(0.9, abs=0.1)  # EWMA: 0.3*3 + 0.7*0
+        # A9: first observation seeds the EWMA exactly (bias-corrected);
+        # A8: the unit is events-per-hour over the batch span (14h)
+        assert profile.typical_event_count.value == pytest.approx(3 / 14, abs=0.05)
         assert "8.8.8.8" in profile.typical_ips
         assert "1.2.3.4" in profile.typical_ips
         # Private IPs should NOT be stored
@@ -301,8 +307,9 @@ class TestEntityProfileStore:
             store.update_user("jsmith", entries)
         profile = store.get_user("jsmith")
         assert profile.observation_count == 10
-        # EWMA should be close to 100 after 10 observations
-        assert abs(profile.typical_event_count.value - 100.0) < 5.0
+        # A8: single-instant batch -> 1h window convention -> rate = 100/hr;
+        # A9: bias-corrected EWMA converges to the observation exactly
+        assert abs(profile.typical_event_count.value - 100.0) < 1.0
 
     def test_update_user_accumulates_across_runs(self, tmp_path):
         """update_user accumulates observations across multiple calls."""
@@ -346,7 +353,9 @@ class TestEntityProfileStore:
         assert "wininit" in profile.typical_parent_processes
         assert "admin" in profile.typical_users
         assert "system" in profile.typical_users
-        assert profile.typical_process_count.value == pytest.approx(0.6, abs=0.1)  # EWMA: 0.3*2 + 0.7*0
+        # A8: process RATE — 2 distinct processes over the 1-minute batch span
+        # (clamped to 1/60h) = 120/hr
+        assert profile.typical_process_count.value == pytest.approx(120.0, abs=1.0)
 
     def test_update_host_network(self, tmp_path):
         """update_host tracks network destinations and ports."""
@@ -365,7 +374,8 @@ class TestEntityProfileStore:
         assert "10.0.5.20" in profile.typical_destinations
         assert 443 in profile.typical_ports
         assert 53 in profile.typical_ports
-        assert profile.typical_network_count.value == pytest.approx(0.6, abs=0.1)  # EWMA: 0.3*2 + 0.7*0
+        # A9: bias-corrected first observation = exactly 2
+        assert profile.typical_network_count.value == pytest.approx(2.0, abs=0.05)
 
     def test_update_host_registry(self, tmp_path):
         """update_host tracks registry modifications."""
@@ -390,7 +400,8 @@ class TestEntityProfileStore:
         ]
         store.update_host("DC01", entries)
         profile = store.get_host("DC01")
-        assert profile.typical_auth_count.value == pytest.approx(0.6, abs=0.1)  # EWMA: 0.3*2 + 0.7*0
+        # A9: bias-corrected first observation = exactly 2 (was 0.6 under zero-start)
+        assert profile.typical_auth_count.value == pytest.approx(2.0, abs=0.05)
         assert profile.typical_auth_failure_ratio.value > 0
 
     def test_update_ip_basic(self, tmp_path):

@@ -225,6 +225,19 @@ def run_pipeline(
             logger.warning("Failed to store baseline snapshot: %s", e)
             degradations.append("baseline_snapshot")
 
+        # A10: flag quarantine for entities that fired anomalies this run
+        # (detection phase only — baseline-phase runs ARE the absorption)
+        if detection.phase != "baseline" and detection.anomalies:
+            try:
+                from nabla.baselines import flag_quarantine
+                from nabla.risk import _data_clock
+                flagged = list({a.get("entity", a.get("user", "")) for a in detection.anomalies if a.get("entity", a.get("user"))})
+                if flagged:
+                    flag_quarantine(flagged, data_clock=_data_clock())
+            except Exception as e:
+                logger.warning("Quarantine flagging failed (non-fatal): %s", e)
+                degradations.append("quarantine_flagging")
+
         # Update entity profiles (skip for ad-hoc file uploads)
         if detection.entity_profiles is not None and not skip_baseline:
             try:
