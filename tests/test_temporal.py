@@ -405,8 +405,11 @@ class TestShouldFlagChain:
         assert should_flag_chain(chain, min_chain_length=3) is False
 
     def test_three_phases_flagged(self):
+        # R11: a multi-phase campaign is multi-method by construction —
+        # the diversity gate is part of the flag contract
+        methods = ["failed_login_ratio", "lolbin", "registry_abuse"]
         chain = TemporalChain(
-            events=[_make_anomaly() for _ in range(3)],
+            events=[_make_anomaly(detection_method=m, anomaly_type=m) for m in methods],
             phases=["credential_access", "execution", "defense_evasion"],
             phase_coverage=0.3,
         )
@@ -421,8 +424,9 @@ class TestShouldFlagChain:
         assert should_flag_chain(chain, min_chain_length=3, min_phase_coverage=0.2) is False
 
     def test_meets_phase_coverage_flagged(self):
+        methods = ["failed_login_ratio", "lolbin", "suspicious_path"]
         chain = TemporalChain(
-            events=[_make_anomaly() for _ in range(3)],
+            events=[_make_anomaly(detection_method=m, anomaly_type=m) for m in methods],
             phases=["credential_access", "execution"],
             phase_coverage=0.2,
         )

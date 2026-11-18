@@ -504,7 +504,19 @@ def compute_risk_scores(
     # event), not the wall clock — decay, stamps, and trend all share one
     # reference so replayed data keeps relative timing (review REQUIRED 1:
     # all four consumers, or mixed-clock artifacts reintroduce the bug).
+    # R12 (round 3, review REQUIRED 1): per-batch reference — max(data clock,
+    # newest anomaly timestamp IN THIS BATCH). A persisted cross-source
+    # high-water would recreate the A7 disease for the course order
+    # (synthetic quickstart runs advance it to wall-now; the attack replay's
+    # months-old stamps then decay to zero). Per-batch handles both orders:
+    # synthetic batches reference their own now (~0 age), replay batches
+    # reference their window end (~0 age).
     ref_clock = _data_clock()
+    from nabla.utils import parse_iso_timestamp as _pit
+    for a in anomalies:
+        dt = _pit(str(a.get("timestamp", "") or ""))
+        if dt is not None and dt > ref_clock:
+            ref_clock = dt
     now = ref_clock.isoformat()
 
     for entity_id, entity_anoms in entity_anomalies.items():
@@ -575,13 +587,18 @@ def compute_risk_scores(
                     new_categories[cat] += per_category
 
             # Track contributing anomaly (condensed)
+            # R2 (fixed for real in R12's testing): base = the UNDECAYED
+            # weight — the contribution formula includes this-run's decay,
+            # so dividing it back out (decay > 0 whenever a timestamp
+            # exists) yields the durable base. Storing the decayed value
+            # made every future run re-decay from a shrunken start.
+            undecayed = contribution / decay if decay > 0 else contribution
             condensed = {
                 "anomaly_id": anomaly.get("anomaly_id", ""),
                 "method": method,
                 "severity": severity,
                 "timestamp": anomaly_time,
-                # R2: the UNDECAYED base stored once; decay recomputed per run
-                "base_contribution": round(contribution, 3),
+                "base_contribution": round(undecayed, 3),
                 "contribution": round(contribution, 3),
                 "categories": categories,
             }

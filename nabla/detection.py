@@ -672,8 +672,16 @@ def detect_anomalies(
             if entity_profiles is not None and entity_profiles.warm_up_complete("user", user):
                 profile = entity_profiles.get_user(user)
                 if profile and profile.typical_hours:
-                    # Flag hours that are NOT in the user's typical set
-                    unusual_hours = [h for h in hours if h not in profile.typical_hours]
+                    # R10 (round 3): share-based unusualness when the
+                    # histogram is warm (sum >= 50) — binary set-membership
+                    # fired sparse-night users on every quiet-hour blip;
+                    # the histogram says '2% share = typical for them'
+                    from nabla.utils import hour_is_unusual
+                    hist = getattr(profile, "hour_histogram", {}) or {}
+                    if sum(hist.values()) >= 50.0:
+                        unusual_hours = [h for h in hours if hour_is_unusual(hist, h)]
+                    else:
+                        unusual_hours = [h for h in hours if h not in profile.typical_hours]
                     if len(unusual_hours) >= oh_count:
                         anomalies.append({
                             "type": "entity_off_hours_activity",

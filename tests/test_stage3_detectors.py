@@ -70,9 +70,19 @@ class TestA15MinPopulation:
 
 class TestA16Allowlist:
     def test_sanctioned_service_exempt(self, monkeypatch):
-        monkeypatch.setenv("NABLA_SANCTIONED_SERVICES", "drive.google.com")
-        from nabla.exfiltration import _sanctioned_services
-        assert "drive.google.com" in _sanctioned_services()
+        # R14: reads via Settings — patch the settings object
+        from unittest.mock import MagicMock
+        import nabla.exfiltration as exfil
+        fake_settings = MagicMock()
+        fake_settings.sanctioned_services = "drive.google.com"
+        monkeypatch.setattr("nabla.config.get_settings", lambda: fake_settings)
+        assert "drive.google.com" in exfil._sanctioned_services()
+
+    def test_domain_boundary_matching(self):
+        from nabla.exfiltration import _domain_matches
+        assert _domain_matches("contoso.sharepoint.com", "sharepoint.com")
+        assert _domain_matches("sharepoint.com", "sharepoint.com")
+        assert not _domain_matches("evil-sharepoint.com", "sharepoint.com")
 
 
 class TestA21StagingSize:

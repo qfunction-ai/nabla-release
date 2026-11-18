@@ -34,10 +34,24 @@ logger = get_logger("exfiltration")
 
 # Known cloud storage endpoints that indicate potential exfiltration
 def _sanctioned_services() -> set[str]:
-    """Sanctioned cloud services (A16): comma-separated NABLA_SANCTIONED_SERVICES."""
-    import os
-    raw = os.environ.get("NABLA_SANCTIONED_SERVICES", "")
+    """Sanctioned cloud services (R14 round 3): via Settings (env-plumbed),
+    not a raw os.environ read the container can't receive."""
+    try:
+        from nabla.config import get_settings
+        raw = get_settings().sanctioned_services or ""
+    except Exception:
+        import os
+        raw = os.environ.get("NABLA_SANCTIONED_SERVICES", "")
     return {s.strip().lower() for s in raw.split(",") if s.strip()}
+
+
+def _domain_matches(domain: str, pattern: str) -> bool:
+    """R14: domain-BOUNDARY matching — sanctioning google.com must not exempt
+    every Google subdomain (the substring disease); tenant-level entries
+    (contoso.sharepoint.com) are the documented preference."""
+    domain = domain.lower().rstrip(".")
+    pattern = pattern.lower().rstrip(".")
+    return domain == pattern or domain.endswith("." + pattern)
 
 
 _CLOUD_STORAGE_DOMAINS = {
@@ -167,8 +181,10 @@ def _detect_volume_anomaly(
         if profile is None or profile.observation_count < 3:
             continue
 
-        ewma = profile.typical_event_count
-        z = ewma.z_score(observation_rate(user_net))  # R4 bucketed
+        # R13: like-with-like — network events against the network EWMA
+        ewma = getattr(profile, "network_event_rate", None) or profile.typical_event_count
+        ewma.update(observation_rate(user_net))  # learn this batch's network rate
+        z = ewma.z_score(observation_rate(user_net))
         if z > sigma:
             anomalies.append({
                 "entity": user,
@@ -261,8 +277,8 @@ def _detect_destination_anomaly(
                 domain_lower = dest_domain.lower()
                 sanctioned = _sanctioned_services()
                 for cloud_domain in _CLOUD_STORAGE_DOMAINS:
-                    if cloud_domain in domain_lower:
-                        if any(s in domain_lower for s in sanctioned):
+                    if _domain_matches(domain_lower, cloud_domain):
+                        if any(_domain_matches(domain_lower, s) for s in sanctioned):
                             break  # sanctioned for this deployment: not exfil
                         flags.append(f"cloud storage: {cloud_domain}")
                         break

@@ -81,6 +81,7 @@ class TestVolumeAnomaly:
         ewma.value = 5.0
         ewma.z_score.return_value = 4.0  # Well above sigma
         profile.typical_event_count = ewma
+        profile.network_event_rate = ewma  # R13: the dedicated baseline
 
         profiles = MagicMock()
         profiles.get_user.return_value = profile
@@ -100,6 +101,7 @@ class TestVolumeAnomaly:
         ewma.value = 10.0
         ewma.z_score.return_value = 0.5  # Below sigma
         profile.typical_event_count = ewma
+        profile.network_event_rate = ewma  # R13
 
         profiles = MagicMock()
         profiles.get_user.return_value = profile

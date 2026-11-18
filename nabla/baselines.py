@@ -149,26 +149,29 @@ def _now_iso() -> str:
 
 
 class RecencySet:
-    """A set with recency-weighted membership (A11).
+    """A set with recency-weighted membership (A11, R10 round 3).
 
     Add-only sets saturate: once typical_ips holds 50 entries, EVERY new IP
     is 'typical' and the new-IP signal dies. This wrapper tracks last-seen
-    timestamps per member and evicts least-recently-seen entries when the
-    cap is hit — the members retained are the ones actually in recent
-    behavior. Serialization round-trips as {members, last_seen} so older
-    stores (plain sets/lists) load without migration.
+    EVENT-TIME stamps (UTC ISO strings — R10: the in-memory counter reset
+    on every reload, inverting recency so the newest item evicted first)
+    and evicts least-recently-seen entries when the cap is hit.
     """
 
     def __init__(self, members=None, last_seen=None, max_size: int = 50):
         self.members: set = set(members or [])
         self.last_seen: dict = dict(last_seen or {})
         self.max_size = max_size
-        self._clock = 0
 
-    def add(self, item) -> None:
-        self._clock += 1
+    def add(self, item, seen_at: str = "") -> None:
+        """seen_at: UTC ISO timestamp; empty = wall now (compat)."""
+        from datetime import datetime, timezone
+        stamp = seen_at or datetime.now(timezone.utc).isoformat()
         self.members.add(item)
-        self.last_seen[item] = self._clock
+        # Monotonic: only advance if newer (reload + old batch must not
+        # regress recency)
+        if stamp > self.last_seen.get(item, ""):
+            self.last_seen[item] = stamp
         if len(self.members) > self.max_size:
             self._evict()
 
@@ -302,6 +305,7 @@ class UserProfile(_ProfileMixin):
 
     _SET_FIELDS = set()
     _RECENCY_FIELDS = {"typical_ips": 50, "typical_hours": 48}
+    _HISTOGRAM_FIELDS = {"hour_histogram"}
 
     def __post_init__(self):
         # A11: accept plain sets/lists at construction (tests, legacy callers)
@@ -322,6 +326,13 @@ class UserProfile(_ProfileMixin):
     # cap so long-tail history doesn't saturate the new-signal detection
     typical_ips: "RecencySet" = field(default_factory=lambda: RecencySet(max_size=50))
     typical_hours: "RecencySet" = field(default_factory=lambda: RecencySet(max_size=48))
+    # R10: decayed hour histogram — share-based unusualness (the sparse-night
+    # fix); coexists with typical_hours during migration
+    hour_histogram: dict[int, float] = field(default_factory=dict)
+    # R13 (round 3): dedicated NETWORK-event rate baseline — exfil_volume
+    # compared network counts against the all-events EWMA (a subset vs its
+    # superset; z systematically understated, detector rarely fired)
+    network_event_rate: "EWMAProfile" = field(default_factory=lambda: EWMAProfile())
     typical_actions: dict[str, float] = field(default_factory=dict)
     auth_failure_ratio: EWMAProfile = field(default_factory=EWMAProfile)
     off_hours_ratio: EWMAProfile = field(default_factory=EWMAProfile)
@@ -671,7 +682,11 @@ class EntityProfileStore:
                 try:
                     from nabla.utils import _parse_hour
                     hour = _parse_hour(ts)
-                    profile.typical_hours.add(hour)
+                    profile.typical_hours.add(hour, seen_at=str(ts))
+                    # Decay then count (x0.99 per update — old habits fade)
+                    for h in profile.hour_histogram:
+                        profile.hour_histogram[h] *= 0.99
+                    profile.hour_histogram[hour] = profile.hour_histogram.get(hour, 0.0) + 1.0
                 except (ValueError, IndexError):
                     pass  # silent by design: unparseable timestamp in profile data (2026-09 sweep)
 

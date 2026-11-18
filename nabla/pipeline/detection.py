@@ -189,6 +189,8 @@ def run_detection(
                 threshold=gcn_lof_threshold,
                 _existing_anomalies=result.anomalies,
             )
+            from nabla.detection import _stamp_anomaly_ids as _stamp
+            _stamp(result.gcn_lof_anomalies)
             result.anomalies.extend(result.gcn_lof_anomalies)
             gcn_lof.save(settings.gcn_lof_model_file)
             logger.info("GCN-LOF: %d relational anomalies detected", len(result.gcn_lof_anomalies))
@@ -212,6 +214,8 @@ def run_detection(
                 existing_anomalies=result.anomalies,
                 thresholds=provenance_thresholds,
             )
+            from nabla.detection import _stamp_anomaly_ids as _stamp
+            _stamp(result.provenance_anomalies)
             result.anomalies.extend(result.provenance_anomalies)
             logger.info("Provenance: %d anomalous communities detected", len(result.provenance_anomalies))
         except Exception as e:
@@ -230,6 +234,8 @@ def run_detection(
                 result.anomalies,
                 temporal_thresholds,
             )
+            from nabla.detection import _stamp_anomaly_ids as _stamp
+            _stamp(result.temporal_anomalies)
             result.anomalies.extend(result.temporal_anomalies)
             logger.info("Temporal: %d chains detected", len(result.temporal_anomalies))
         except Exception as e:
@@ -246,6 +252,8 @@ def run_detection(
             )
             result.exfiltration_count = len(exfil_anomalies)
             if exfil_anomalies:
+                from nabla.detection import _stamp_anomaly_ids as _stamp
+                _stamp(exfil_anomalies)
                 result.anomalies.extend(exfil_anomalies)
                 logger.info("Exfiltration: %d anomalies detected", len(exfil_anomalies))
         except Exception as e:

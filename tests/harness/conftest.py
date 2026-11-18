@@ -88,6 +88,21 @@ def drive_pipeline(entries, tmp_path, monkeypatch, detection_phase="detection",
         effective_source="file", skip_graph=not run_graph,
     )
 
+    # Absorption (the orchestration step the harness must exercise): group
+    # entries by entity and update profiles — WITHOUT this, profiles never
+    # warm in-harness and every entity detector stays cold
+    from nabla.baselines import group_entries_by_entity
+    if result.entity_profiles is not None:
+        groups = group_entries_by_entity(entries)
+        for (etype, eid), gentries in groups.items():
+            if etype == "user":
+                result.entity_profiles.update_user(eid, gentries)
+            elif etype == "host":
+                result.entity_profiles.update_host(eid, gentries)
+            elif etype == "ip":
+                result.entity_profiles.update_ip(eid, gentries)
+        result.entity_profiles.save()  # the orchestration step the harness skipped twice
+
     # Risk: real scoring against the tmp store
     from nabla import risk
     monkeypatch.setattr(risk, "_data_clock", lambda: datetime.now(timezone.utc))

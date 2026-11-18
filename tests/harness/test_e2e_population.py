@@ -135,15 +135,6 @@ class TestR3R4AlertRatesOnNormalPopulation:
 
 
 class TestAttackDetection:
-    @pytest.mark.xfail(
-        reason="R4 residual: entity-off-hours fires on sparse-night users "
-               "(Poisson(2)/hr nights: hours with 0 events never join "
-               "typical_hours; a 3-event night hour reads as atypical). "
-               "The R10 decayed-histogram (2% share threshold) is the "
-               "designed fix — this test moves to xpass when phase 6 lands. "
-               "Diagnosis chain: harness/commit history 2026-11-18.",
-        strict=False,
-    )
     def test_attack_user_detected_and_separated(self, tmp_path, monkeypatch):
         """The attack user must be detected and cross the investigation
         cutoff while at most 1 normal user does (tolerance for the Poisson

@@ -188,3 +188,40 @@ class TestR1R2Round3:
         actual = seed[0].get("contribution", 0.0)
         assert abs(actual - expected) < 0.05 * base, (
             f"contribution {actual} vs single-decay {expected:.3f} (base {base})")
+
+
+class TestR12BothOrders:
+    def test_synthetic_then_replay_both_alive(self, tmp_path, monkeypatch):
+        """REQUIRED 1's harness case: BOTH course orders score non-trivially."""
+        s = _settings(tmp_path)
+        monkeypatch.setattr("nabla.config.get_settings", lambda: s)
+        from nabla import risk
+        import json as J
+        from datetime import datetime, timedelta, timezone
+
+        # SIEM replay stamps August; the persisted clock sits at Aug-end
+        state = tmp_path / "system_state.json"
+        aug_end = "2026-08-31T23:59:00Z"
+        state.write_text(J.dumps({"data_newest_ts": aug_end}))
+
+        # Order 1: synthetic run (wall-now stamps) AFTER the replay
+        now_anom = {**ANOMALY, "anomaly_id": "synth-1",
+                    "timestamp": datetime.now(timezone.utc).isoformat()}
+        st1 = risk.compute_risk_scores([now_anom], {"alice": "user"}, half_life_hours=24.0)
+        assert st1.scores["alice"].overall > 3.0, "synthetic-after-replay died (the A7 disease)"
+
+        # Order 2: replay-stamped attack. The clock sits at Aug-31 (the
+        # replay's own newest); the attack batch's newest is Aug-30 22:00 ->
+        # per-batch ref = Aug-31 -> ~26h age -> ~1.9 of 4.0 base. That IS
+        # the honest decay (one day older than the newest data). The case
+        # the per-batch fix guards: a synthetic run CANNOT advance the
+        # reference (risk never persists it), so the Nov-18-wall-now
+        # poisoning the review feared cannot happen. Assert the bounded
+        # decay — and that it's decay-from-OWN-time, not 80-day zeroing:
+        aug_anom = {**ANOMALY, "anomaly_id": "atk-1", "entity": "bob",
+                    "timestamp": "2026-08-30T22:00:00Z"}
+        st2 = risk.compute_risk_scores([aug_anom], {"alice": "user", "bob": "user"},
+                                       half_life_hours=24.0)
+        bob = st2.scores["bob"].overall
+        assert bob > 1.0, f"replay zeroed ({bob}) — 80-day disease, not 1-day decay"
+        assert bob < 4.0, f"decay not applied ({bob})"

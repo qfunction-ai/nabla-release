@@ -160,3 +160,16 @@ def _parse_hour(ts: str) -> int:
     if dt is None:
         return -1  # unparseable: callers treat as not-off-hours
     return dt.astimezone(timezone.utc).hour
+
+
+def hour_is_unusual(counts: dict[int, float], hour: int,
+                    min_share: float = 0.02, min_total: float = 50.0) -> bool:
+    """R10 (round 3): share-based hour-unusualness.
+
+    Binary typical_hours membership couldn't represent '2% of activity at
+    night, consistently' — sparse-night users fired entity-off-hours on
+    every quiet-hour blip (the harness xfail's diagnosis). A decayed
+    histogram with a share threshold can.
+    """
+    total = sum(counts.values())
+    return total >= min_total and counts.get(hour, 0.0) / total < min_share
