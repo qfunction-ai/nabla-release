@@ -47,7 +47,7 @@ export default function Timeline({ entityId, entityType }: TimelineProps) {
     apiFetch<{ events: TimelineEvent[]; total: number }>(
       `/api/timeline/${encodeURIComponent(entityId)}?${params.toString()}`
     )
-      .then((data) => setEvents(data.events))
+      .then((data) => setEvents(Array.isArray(data?.events) ? data.events : []))
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [entityId, entityType]);

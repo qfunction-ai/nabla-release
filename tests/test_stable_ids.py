@@ -79,7 +79,7 @@ def test_incident_records_contributing_ids(tmp_path):
     import unittest.mock as mock
     with mock.patch.object(inc, "_incidents_file", return_value=monkey_path), \
          mock.patch.object(inc, "_load_run_anomalies", return_value=[anomaly]):
-        finding = {"entity": "alice", "entity_type": "user", "finding_type": "brute_force",
+        finding = {"entity": "alice", "entity_type": "user", "type": "brute_force",
                    "severity": "high", "confidence": 0.9, "log_types": ["auth"],
                    "mitre_attack": [], "tools_detected": None}
         n = save_incidents(run_id="r-1", findings=[finding],

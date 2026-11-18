@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from letta_client import Letta
 
+from nabla.degradations import report_degradation
 from nabla.log import get_logger
 from nabla.pipeline.helpers import (
     _read_baseline_host_procs,
@@ -107,13 +108,18 @@ def run_detection(
         )
     except Exception as e:
         logger.warning("Failed to load entity profiles (non-fatal): %s", e)
+        report_degradation("entity_profile_load")
 
     # Compute warm-up summary
     try:
         from nabla.system_state import warm_up_summary
         result.warm_up_info = warm_up_summary(result.entity_profiles)
     except Exception as e:
-        logger.warning("attack index load failed (non-fatal): %s", e, exc_info=True)
+        # Was mislabeled "attack index load failed" — this is the warm-up
+        # summary, and the wrong name sent anyone reading the log to the
+        # wrong code path.
+        logger.warning("Warm-up summary failed (non-fatal): %s", e, exc_info=True)
+        report_degradation("warm_up_summary")
 
     # Build attack tool name index from STIX bundle
     attack_tool_index = None
@@ -124,6 +130,7 @@ def run_detection(
         logger.info("Loaded attack tool index: %d entries", len(attack_tool_index))
     except Exception as e:
         logger.warning("Failed to load attack tool index (using fallback): %s", e)
+        report_degradation("attack_tool_index_load")
 
     # Load environment context
     result.env_context = _load_environment_context(settings.effective_env_context_path)
@@ -196,6 +203,7 @@ def run_detection(
             logger.info("GCN-LOF: %d relational anomalies detected", len(result.gcn_lof_anomalies))
         except Exception as e:
             logger.warning("GCN-LOF detection failed (non-fatal): %s", e)
+            report_degradation("gcn_lof_detection")
 
     # Provenance Graph Analysis (skippable: --no-graph)
     if not skip_graph and len(all_entries) >= 3:
@@ -220,6 +228,7 @@ def run_detection(
             logger.info("Provenance: %d anomalous communities detected", len(result.provenance_anomalies))
         except Exception as e:
             logger.warning("Provenance detection failed (non-fatal): %s", e)
+            report_degradation("provenance_detection")
 
     # Temporal Correlation Engine (skippable: --no-graph)
     if not skip_graph and len(result.anomalies) >= 2:
@@ -240,6 +249,7 @@ def run_detection(
             logger.info("Temporal: %d chains detected", len(result.temporal_anomalies))
         except Exception as e:
             logger.warning("Temporal correlation failed (non-fatal): %s", e)
+            report_degradation("temporal_correlation")
 
     # Data Exfiltration Detection
     if len(all_entries) >= 2:
@@ -258,6 +268,7 @@ def run_detection(
                 logger.info("Exfiltration: %d anomalies detected", len(exfil_anomalies))
         except Exception as e:
             logger.warning("Exfiltration detection failed (non-fatal): %s", e)
+            report_degradation("exfiltration_detection")
 
     # Collect anomalous entities and attach entity context
     entity_facts = result.env_context.get("entities", {})
@@ -339,6 +350,7 @@ def _write_graph_context_block(client: Letta, agents: dict, result: DetectionRes
             )
     except Exception as e:
         logger.warning("Failed to write graph_context block (non-fatal): %s", e)
+        report_degradation("graph_context_block")
 
 
 def _write_environment_context_block(client: Letta, agents: dict, result: DetectionResult, all_entries: list[dict] | None = None) -> None:
@@ -406,6 +418,7 @@ def _write_environment_context_block(client: Letta, agents: dict, result: Detect
         )
     except Exception as e:
         logger.warning("Failed to write environment_context block (non-fatal): %s", e)
+        report_degradation("environment_context_block")
 
 
 def _write_system_phase_block(client: Letta, agents: dict, result: DetectionResult) -> None:
@@ -421,3 +434,4 @@ def _write_system_phase_block(client: Letta, agents: dict, result: DetectionResu
         logger.info("System phase block written (%s)", result.phase)
     except Exception as e:
         logger.warning("Failed to write system_phase block (non-fatal): %s", e)
+        report_degradation("system_phase_block")

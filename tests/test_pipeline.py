@@ -699,7 +699,7 @@ class TestLoadEnvironmentContext:
                 "joindomain": ["Exclusively used to join computers to the domain"],
             },
             "network_ranges": ["10.0.0.0/8"],
-            "new_accounts": ["helpdesk_user", "joindomain"],
+            "new_accounts": ["helpdeskone", "joindomain"],
             "service_accounts": ["svc_backup"],
             "admin_accounts": ["admin"],
             "benign_patterns": ["certutil downloading known installer"],
@@ -712,7 +712,7 @@ class TestLoadEnvironmentContext:
             assert ctx["environment"] == ["Only one forest in the domain"]
             assert ctx["entities"] == {"joindomain": ["Exclusively used to join computers to the domain"]}
             assert ctx["network_ranges"] == ["10.0.0.0/8"]
-            assert ctx["new_accounts"] == {"helpdesk_user", "joindomain"}
+            assert ctx["new_accounts"] == {"helpdeskone", "joindomain"}
             assert ctx["service_accounts"] == {"svc_backup"}
             assert ctx["admin_accounts"] == {"admin"}
             assert ctx["benign_patterns"] == ["certutil downloading known installer"]
@@ -763,6 +763,70 @@ class TestAutoDetectNetworkRanges:
         entries = [{"source_ip": "fd00::1"}]
         ranges = _auto_detect_network_ranges(entries)
         assert len(ranges) == 1  # fd00::/64
+
+    def test_unparseable_ip_is_skipped_not_fatal(self):
+        """One malformed IP must not poison the rest of the batch (F7).
+
+        Regression: the 2026-09 silent-swallow sweep replaced this handler's
+        `continue` with a bare `pass`, leaving `addr` unbound. A single bad IP
+        then raised UnboundLocalError, which aborted the entire
+        environment-context block write — auto-ranges, new accounts, and
+        per-entity run stats all silently kept their previous values.
+        """
+        entries = [{"source_ip": "-"}, {"source_ip": "172.31.94.24"}]
+        ranges = _auto_detect_network_ranges(entries)
+        assert "172.31.94.0/24" in ranges
+
+    def test_placeholder_only_entries_yield_no_ranges(self):
+        """A batch of nothing but placeholders is empty, not an error."""
+        assert _auto_detect_network_ranges([{"source_ip": "-"}]) == []
+        assert _auto_detect_network_ranges([{"source_ip": "-"}, {"source_ip": ""}]) == []
+
+    def test_unparseable_ip_after_valid_one(self):
+        """Order must not matter — a bad IP trailing a good one is still skipped."""
+        entries = [{"source_ip": "10.0.1.5"}, {"source_ip": "not-an-ip"}]
+        assert _auto_detect_network_ranges(entries) == ["10.0.1.0/24"]
+
+
+class TestEnvironmentContextBlockWriteSurvivesBadInput:
+    """F7 end to end: the block write must not be aborted by one bad IP.
+
+    The unit tests above pin the helper. This pins the consequence — that the
+    supervisor's block actually gets written when the batch contains a
+    placeholder IP, which is the thing that was silently not happening.
+    """
+
+    def _write(self, all_entries, tmp_path, monkeypatch):
+        from nabla.pipeline.detection import DetectionResult, _write_environment_context_block
+
+        monkeypatch.setenv("NABLA_DATA_DIR", str(tmp_path))
+        client = MagicMock()
+        result = DetectionResult(
+            env_context={"environment": [], "entities": {}},
+            anomalous_entities=set(),
+        )
+        _write_environment_context_block(client, {"supervisor": "agent-1"}, result, all_entries=all_entries)
+        return client, result
+
+    def test_block_written_when_batch_has_placeholder_ip(self, tmp_path, monkeypatch):
+        """A `-` source_ip must not stop the block write."""
+        client, result = self._write(
+            [{"source_ip": "-", "user": "alice"}, {"source_ip": "172.31.94.24", "user": "bob"}],
+            tmp_path,
+            monkeypatch,
+        )
+        assert client.agents.blocks.update.called, "environment_context block was never written"
+        assert "172.31.94.0/24" in result.auto_ranges
+
+    def test_block_written_for_clean_batch(self, tmp_path, monkeypatch):
+        """The happy path still works — the guard did not break the normal case."""
+        client, result = self._write(
+            [{"source_ip": "10.0.1.5", "user": "alice"}],
+            tmp_path,
+            monkeypatch,
+        )
+        assert client.agents.blocks.update.called
+        assert result.auto_ranges == ["10.0.1.0/24"]
 
 
 class TestFormatEnvContextBlock:
@@ -841,13 +905,13 @@ class TestFormatEnvContextBlock:
             "environment": [],
             "entities": {},
             "network_ranges": [],
-            "new_accounts": {"helpdesk_user", "joindomain"},
+            "new_accounts": {"helpdeskone", "joindomain"},
             "service_accounts": set(),
             "admin_accounts": set(),
             "benign_patterns": [],
         }
         text = _format_env_context_block(ctx, [])
-        assert "helpdesk_user" in text
+        assert "helpdeskone" in text
         assert "joindomain" in text
         assert "grace period" in text.lower()
 

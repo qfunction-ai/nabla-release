@@ -184,17 +184,24 @@ def run_pipeline(
         if watchlist_groups:
             watchlist = _filter_watchlist_by_groups(settings.effective_watchlist_path, watchlist_groups)
 
-        detection = run_detection(
-            client=client,
-            agents=agents,
-            settings=settings,
-            all_entries=ingestion.entries,
-            watchlist=watchlist,
-            siem_entries_ingested=ingestion.siem_entries_ingested,
-            effective_source=ingestion.effective_source,
-            skip_graph=skip_graph,
-            gcn_lof_enabled=gcn_lof_enabled,
-        )
+        # F3: detectors swallow their own exceptions so one bad detector cannot
+        # kill a run. That is right, but it meant a detector could fail on
+        # every run and the run still reported clean — exfil_volume did
+        # exactly that for a whole round. The collector routes those failures
+        # into this run's degradations list.
+        from nabla.degradations import collect_degradations
+        with collect_degradations(degradations):
+            detection = run_detection(
+                client=client,
+                agents=agents,
+                settings=settings,
+                all_entries=ingestion.entries,
+                watchlist=watchlist,
+                siem_entries_ingested=ingestion.siem_entries_ingested,
+                effective_source=ingestion.effective_source,
+                skip_graph=skip_graph,
+                gcn_lof_enabled=gcn_lof_enabled,
+            )
         results["anomaly"] = (
             f"Detected {len(detection.anomalies)} anomalies "
             f"({len(detection.gcn_lof_anomalies)} via GCN-LOF, "

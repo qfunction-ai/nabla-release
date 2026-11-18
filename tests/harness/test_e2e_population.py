@@ -60,6 +60,209 @@ def _run_days(tmp_path, monkeypatch, days=2.0, n_users=40, seed=42,
     return pop, results
 
 
+class TestNoDetectorDegradesOnCleanPopulation:
+    """F3/F4 WITNESS: on a clean Poisson population, no detector may fail.
+
+    Detectors swallow their own exceptions so one bad detector cannot kill a
+    run. The cost is that a detector failing on every run looks identical to
+    a detector with nothing to report. `exfil_volume` failed on every run for
+    a whole round this way (F1) and nothing noticed. This asserts the
+    difference.
+    """
+
+    def test_no_degradations_across_days(self, tmp_path, monkeypatch):
+        _, results = _run_days(tmp_path, monkeypatch, days=1.5, n_users=20, seed=7)
+        degraded = Counter()
+        for r in results:
+            for name in r.get("degradations", []):
+                degraded[name] += 1
+        assert not degraded, (
+            f"detectors degraded on a clean population run "
+            f"({len(results)} runs): {dict(degraded)}"
+        )
+
+    def test_exfil_volume_actually_runs(self, tmp_path, monkeypatch):
+        """F1 WITNESS: the volume detector must be exercised, not skipped.
+
+        A detector that never reaches its scoring path is indistinguishable
+        from one that scores and finds nothing. Assert the network baseline
+        is being learned, which only happens if the path executes.
+        """
+        import json
+
+        _, results = _run_days(tmp_path, monkeypatch, days=1.0, n_users=20, seed=7)
+        assert results, "no runs"
+        store_path = tmp_path / "entity_profiles.json"
+        assert store_path.exists(), "harness never persisted profiles"
+        users = json.loads(store_path.read_text())["users"]
+        learned = [
+            u for u, p in users.items()
+            if isinstance(p.get("network_event_rate"), dict)
+            and p["network_event_rate"].get("n", 0) > 0
+        ]
+        assert learned, (
+            "no user learned a network-event baseline — the volume detector's "
+            "input is dead (F1: field missing from _EWMA_FIELDS, or the "
+            "baseline is not learned in absorption)"
+        )
+
+    def test_a_broken_detector_is_actually_caught(self, tmp_path, monkeypatch):
+        """Positive control: if a detector DOES fail, the assertion above must
+        see it. Without this, a sink that silently never fills would make the
+        clean-run assertion pass for the wrong reason."""
+        from nabla import exfiltration
+
+        def boom(*a, **kw):
+            raise RuntimeError("F1-shaped failure")
+
+        monkeypatch.setattr(exfiltration, "_detect_volume_anomaly", boom)
+        _, results = _run_days(tmp_path, monkeypatch, days=0.5, n_users=20, seed=7)
+        degraded = Counter()
+        for r in results:
+            for name in r.get("degradations", []):
+                degraded[name] += 1
+        assert degraded.get("exfil_volume") == len(results), (
+            f"a detector that raises on every run was not reported "
+            f"({dict(degraded)} over {len(results)} runs)"
+        )
+
+
+class TestMachineAccountsAreNotBaselined:
+    """F5 WITNESS: machine principals must not produce behavioral findings.
+
+    The harness population was 100% human, so it could not reproduce the
+    defect it was meant to catch — the real dataset-v1 is 13 machine
+    principals to one human, and off-hours detection was firing on almost
+    entirely the wrong population. The population now includes the principals
+    that actually fired in the rehearsal, running flat across all 24 hours
+    (which is what a service account does, and is the exact condition that
+    made them fire).
+
+    This asserts against real detector output through the real pipeline, not
+    against the predicate in isolation.
+    """
+
+    @staticmethod
+    def _machine_findings(results):
+        """Every finding attributed to a machine principal, by detector."""
+        from harness.population import MACHINE_PRINCIPALS
+
+        found = Counter()
+        for r in results:
+            for a in (r["detection"].anomalies or []):
+                user = a.get("user") or a.get("entity") or ""
+                if user in MACHINE_PRINCIPALS:
+                    found[(user, a.get("detection_method") or a.get("type"))] += 1
+        return found
+
+    def test_machine_accounts_produce_no_off_hours_findings(self, tmp_path, monkeypatch):
+        _, results = _run_days(tmp_path, monkeypatch, days=1.5, n_users=20, seed=7)
+        off_hours = {
+            k: v for k, v in self._machine_findings(results).items()
+            if "off_hours" in str(k[1])
+        }
+        assert not off_hours, (
+            f"machine accounts produced off-hours findings — a service account "
+            f"has no schedule to deviate from: {dict(off_hours)}"
+        )
+
+    def test_machine_accounts_are_not_peers_of_humans(self, tmp_path, monkeypatch):
+        """The other half of F5. Peer groups are computed in orchestration,
+        which this harness does not drive, so it is called directly here —
+        against the real profiles the real pipeline produced."""
+        from nabla.baselines import EntityProfileStore
+        from nabla.peer_groups import compute_peer_groups
+        from harness.population import MACHINE_PRINCIPALS
+
+        _, results = _run_days(tmp_path, monkeypatch, days=1.5, n_users=20, seed=7)
+        store = EntityProfileStore(tmp_path / "entity_profiles.json")
+        groups = compute_peer_groups(store, recompute_interval=0)
+
+        user_groups = [g for g in groups.groups.values() if g.entity_type == "user"]
+        assert user_groups, "no user peer groups were computed"
+
+        contaminated = {
+            g.group_id: sorted(set(g.members) & set(MACHINE_PRINCIPALS))
+            for g in user_groups
+            if set(g.members) & set(MACHINE_PRINCIPALS)
+        }
+        assert not contaminated, (
+            f"machine accounts clustered as peers of humans — every "
+            f"peer-relative score for those humans is then computed against "
+            f"accounts that never sleep: {contaminated}"
+        )
+
+    def test_self_baseline_detectors_still_apply_to_machine_accounts(
+        self, tmp_path, monkeypatch
+    ):
+        """Scope boundary, pinned deliberately.
+
+        F5 excludes machine accounts from OFF-HOURS detection and peer
+        grouping. It must NOT exclude them from self-baseline detectors: a
+        service account deviating from its own history is a real compromise
+        signal, and `entity_z_score` compares an entity to its own EWMA, not
+        to a peer group. If someone later "finishes the job" by excluding
+        machine accounts everywhere, this fails and says why.
+        """
+        found = self._machine_findings(
+            _run_days(tmp_path, monkeypatch, days=1.5, n_users=20, seed=7)[1]
+        )
+        self_baseline = {
+            k: v for k, v in found.items()
+            if k[1] in {"entity_z_score", "z_score", "ewma", "cusum",
+                        "activity_spike", "exfil_volume"}
+        }
+        assert self_baseline, (
+            "machine accounts produced no self-baseline findings at all — "
+            "they have been excluded from detectors that should still apply "
+            "to them (a compromised service account is a real attack)"
+        )
+
+    def test_the_assertion_is_not_vacuous(self, tmp_path, monkeypatch):
+        """Positive control. If machine accounts produced no off-hours-shaped
+        activity, the assertions above would pass for the wrong reason."""
+        from harness.population import MACHINE_PRINCIPALS
+        from nabla.utils import _parse_hour
+
+        pop = Population(seed=7, n_users=20)
+        assert pop.machine_users, "population has no machine principals"
+
+        night = 0
+        total = 0
+        for _, events in pop.batches(SIM_START, 1.0, batch_minutes=60):
+            for e in events:
+                if e["user"] not in MACHINE_PRINCIPALS:
+                    continue
+                total += 1
+                if _parse_hour(e["timestamp"]) in (0, 1, 2, 3, 4, 5, 22, 23):
+                    night += 1
+        assert total > 0, "machine principals emitted no events"
+        assert night / total > 0.25, (
+            f"machine activity is not spread across the night "
+            f"({night}/{total} = {night / total:.0%}) — the off-hours "
+            f"assertion would be vacuous"
+        )
+
+    def test_disabling_the_predicate_restores_the_findings(self, tmp_path, monkeypatch):
+        """Positive control, second half: prove the fix is what suppresses
+        them. With the predicate neutered, machine accounts must reappear —
+        otherwise the assertions above are measuring nothing."""
+        import nabla.detection as det
+        import nabla.utils as utils
+
+        monkeypatch.setattr(utils, "is_baselineable_user", lambda name: True)
+        monkeypatch.setattr(det, "is_baselineable_user", lambda name: True, raising=False)
+
+        found = self._machine_findings(
+            _run_days(tmp_path, monkeypatch, days=1.5, n_users=20, seed=7)[1]
+        )
+        assert found, (
+            "with the machine-account predicate disabled, machine accounts "
+            "still produced no findings — the test above cannot be measuring "
+            "the predicate"
+        )
+
+
 class TestR1RiskRunsOnRealOutput:
     def test_no_risk_error_across_days(self, tmp_path, monkeypatch):
         """R1 WITNESS: real detector output (IDs stamped) must flow through
@@ -96,7 +299,12 @@ class TestR3R4AlertRatesOnNormalPopulation:
                 if m in entity_methods and u:
                     fired.add((u, m))
                     user_fires[(u, m)] += 1
-            for u in pop.users:
+            # F5: the population now includes machine principals. They are
+            # subject to the same self-baseline detectors (a service account
+            # deviating from its own history is a real signal), so they belong
+            # in the denominator. Omitting them made `user_runs.get(key, 1)`
+            # fall back to 1 and reported a 300% rate for three fires.
+            for u in list(pop.users) + list(pop.machine_users):
                 for m in entity_methods:
                     user_runs[(u, m)] += 1
 

@@ -425,6 +425,22 @@ def compute_peer_groups(
             if profile.observation_count >= min_obs
         }
 
+        # F5: machine accounts are not peers of people. Clustering `root` and
+        # `SYSTEM` alongside human analysts puts every human in a group whose
+        # centroid is a service account's behavior, which makes the
+        # peer-relative score meaningless for exactly the entities it is
+        # supposed to help. Excluded, and logged so it is visible.
+        if entity_type == "user":
+            from nabla.utils import is_baselineable_user
+            machine = {e for e in eligible if not is_baselineable_user(e)}
+            if machine:
+                logger.info(
+                    "Peer groups: excluded %d machine account(s) from user "
+                    "clustering: %s",
+                    len(machine), sorted(machine)[:10],
+                )
+                eligible = {e: f for e, f in eligible.items() if e not in machine}
+
         if len(eligible) < 2:
             continue
 

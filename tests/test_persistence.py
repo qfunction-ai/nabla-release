@@ -5,6 +5,8 @@ import os
 import tempfile
 import threading
 
+import pytest
+
 from nabla.persistence import atomic_write_json, file_lock
 
 
@@ -97,7 +99,7 @@ def test_file_lock_creates_lock_file():
 
 
 def test_atomic_write_json_with_datetime():
-    """datetime values should serialize to string via default=str and produce valid JSON."""
+    """datetime values serialize to ISO 8601 (F1: not via default=str)."""
     from datetime import datetime
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -109,9 +111,26 @@ def test_atomic_write_json_with_datetime():
         with open(path) as f:
             loaded = json.load(f)
 
-        # default=str converts datetime to its ISO string representation
-        assert loaded["timestamp"] == str(dt)
+        # F1: ISO 8601, not str(dt)'s space-separated form. Round-trips.
+        assert loaded["timestamp"] == dt.isoformat()
+        assert datetime.fromisoformat(loaded["timestamp"]) == dt
         assert loaded["label"] == "test"
+
+
+def test_atomic_write_json_rejects_unknown_types():
+    """F1: an unserializable value must fail at write time, not persist as repr.
+
+    `default=str` used to turn any unknown object into its repr string. That
+    silently corrupted entity_profiles.json (an undeclared EWMAProfile field
+    became "EWMAProfile(value=0.0, ...)") and killed the exfil_volume detector
+    for a whole round. A type we cannot serialize is a bug, not a format.
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = os.path.join(tmpdir, "bad.json")
+        with pytest.raises(TypeError, match="not JSON-serializable"):
+            atomic_write_json(path, {"thing": object()})
+        # The failure must not leave a partial file behind
+        assert not os.path.exists(path)
 
 
 def test_atomic_write_json_deeply_nested_dirs():

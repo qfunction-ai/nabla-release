@@ -86,7 +86,7 @@ def _auto_detect_network_ranges(entries: list[dict]) -> list[str]:
         try:
             addr = _ip.ip_address(ip)
         except ValueError:
-            pass  # silent by design: unparseable timestamp in env detection (2026-09 sweep)
+            continue  # silent by design: unparseable IP in env detection (2026-09 sweep)
         if addr.is_private:
             # Group into /24 subnet
             if addr.version == 4:

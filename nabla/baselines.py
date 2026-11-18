@@ -314,7 +314,13 @@ class UserProfile(_ProfileMixin):
             val = getattr(self, fname)
             if not isinstance(val, _RS):
                 setattr(self, fname, _RS.from_legacy(val, max_size=max_size))
-    _EWMA_FIELDS = {"typical_event_count", "auth_failure_ratio", "off_hours_ratio"}
+    # F1: every EWMAProfile field must be listed here or it serializes as its
+    # own repr (atomic_write_json's default=str) and reloads as a string.
+    # tests/test_profile_roundtrip.py enforces this against the dataclass fields.
+    _EWMA_FIELDS = {
+        "typical_event_count", "auth_failure_ratio", "off_hours_ratio",
+        "network_event_rate",
+    }
 
     entity_id: str = ""
     first_seen: str = ""
@@ -668,6 +674,20 @@ class EntityProfileStore:
         from nabla.baselines import observation_rate
         profile.typical_event_count.update(observation_rate(entries))
 
+        # F1: the NETWORK-event rate baseline is learned here, in absorption,
+        # like every other baseline — not inside the detector that scores
+        # against it. Training inside the detector coupled the two: a detector
+        # that could not fire could not learn, and a baseline that could not
+        # learn meant the detector could never fire. That is why R13's fix was
+        # hollow even before the serialization bug was found. Detection runs
+        # before absorption, so this still scores-then-learns.
+        net_entries = [
+            e for e in entries
+            if e.get("action") == "network_connect" or e.get("type") == "network"
+        ]
+        if net_entries:
+            profile.network_event_rate.update(observation_rate(net_entries))
+
         # IPs (only publicly routable — private IPs are not useful for
         # impossible-travel detection and would cause false positives)
         for e in entries:
@@ -675,20 +695,26 @@ class EntityProfileStore:
             if ip and is_routable_ip(ip):
                 profile.typical_ips.add(ip)
 
-        # Hours
+        # Hours — batch-local aggregation, then ONE decay+count per update
+        # (R10 correction: decaying per EVENT annihilated history within a
+        # single large batch — 0.99^N for N events; per-update is the design)
+        from collections import Counter as _Counter
+        _batch_hours: dict[int, int] = _Counter()
         for e in entries:
             ts = e.get("timestamp", "")
             if ts:
                 try:
                     from nabla.utils import _parse_hour
                     hour = _parse_hour(ts)
-                    profile.typical_hours.add(hour, seen_at=str(ts))
-                    # Decay then count (x0.99 per update — old habits fade)
-                    for h in profile.hour_histogram:
-                        profile.hour_histogram[h] *= 0.99
-                    profile.hour_histogram[hour] = profile.hour_histogram.get(hour, 0.0) + 1.0
+                    if hour >= 0:
+                        _batch_hours[hour] += 1
+                        profile.typical_hours.add(hour, seen_at=str(ts))
                 except (ValueError, IndexError):
                     pass  # silent by design: unparseable timestamp in profile data (2026-09 sweep)
+        for hour, n in _batch_hours.items():
+            for h in profile.hour_histogram:
+                profile.hour_histogram[h] *= 0.99
+            profile.hour_histogram[hour] = profile.hour_histogram.get(hour, 0.0) + float(n)
 
         # Actions
         action_counter: Counter[str] = Counter()

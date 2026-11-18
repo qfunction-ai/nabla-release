@@ -7,10 +7,12 @@ Public API:
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from nabla.log import get_logger
+from nabla.utils import parse_iso_timestamp
 from nabla.parsers.field_map import (
     auto_detect_fields,
     apply_column_map,
@@ -18,6 +20,14 @@ from nabla.parsers.field_map import (
 )
 
 logger = get_logger("parsers")
+
+# F2: a leading ISO timestamp followed by whatever the collector over-captured.
+_LEADING_ISO = re.compile(
+    r"^\s*\"?(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)"
+)
+
+# Epoch seconds or milliseconds, with an optional sign and fraction.
+_EPOCH_LIKE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
 # Supported format names
 FORMATS = ("csv", "json", "jsonl", "xml", "text", "syslog")
@@ -235,7 +245,8 @@ def _normalize_timestamp(ts: str) -> str:
     """Normalize a timestamp string to ISO format.
 
     Handles:
-    - ISO strings (pass through)
+    - ISO strings (validated, then passed through)
+    - ISO strings with trailing junk (leading timestamp recovered, with a warning)
     - Epoch integers/floats (convert to ISO)
     - Empty strings (return current time)
 
@@ -243,21 +254,50 @@ def _normalize_timestamp(ts: str) -> str:
         ts: Timestamp string.
 
     Returns:
-        ISO format timestamp string.
+        ISO format timestamp string, or "" if the value is not a timestamp.
+
+    F2: this used to return any string containing "T" or "-" unchanged. It
+    never validated, so a Sysmon timestamp that had swallowed the following
+    XML (`"2026-08-09T00:00:15Z"/><EventRecordID>...`) passed straight through
+    and blinded every time-based detector on 73% of the dataset. A value that
+    is not a timestamp is now reported and treated as absent.
     """
     if not ts:
         return datetime.now(timezone.utc).isoformat()
 
-    # Already ISO-like
-    if "T" in ts or "-" in ts:
-        return ts
+    text = ts.strip()
 
-    # Try epoch
-    try:
-        epoch = float(ts)
-        return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
-    except (ValueError, OSError, OverflowError):
-        pass  # silent by design: unparseable timestamp in parse (2026-09 sweep)
+    # Already a valid timestamp
+    if parse_iso_timestamp(text) is not None:
+        return text
 
-    # Return as-is if we can't parse it
-    return ts
+    # A leading timestamp followed by junk. Recovering is right for messy
+    # real exports, but it is a data-quality problem and must be visible.
+    leading = _LEADING_ISO.match(text)
+    if leading:
+        recovered = leading.group(1)
+        logger.warning(
+            "Recovered timestamp from a malformed value (kept %r, discarded "
+            "%d trailing characters)",
+            recovered, len(text) - len(recovered),
+        )
+        return recovered
+
+    # Try epoch — only when it actually looks like one, so a non-timestamp
+    # does not take the exception path to get here.
+    if _EPOCH_LIKE.fullmatch(text):
+        try:
+            epoch = float(text)
+            return datetime.fromtimestamp(epoch, tz=timezone.utc).isoformat()
+        except (ValueError, OSError, OverflowError) as exc:
+            logger.warning(
+                "Epoch-like timestamp %r is not convertible: %s", text[:60], exc
+            )
+
+    # Not a timestamp. Returning the raw value would let it flow into every
+    # time-based consumer as a plausible-looking string; absent is honest.
+    logger.warning(
+        "Discarding unparseable timestamp %r — treated as absent",
+        text[:120],
+    )
+    return ""

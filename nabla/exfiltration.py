@@ -20,6 +20,7 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from nabla.degradations import report_degradation
 from nabla.log import get_logger
 
 if TYPE_CHECKING:
@@ -178,12 +179,29 @@ def _detect_volume_anomaly(
         if entity_profiles is None:
             continue
         profile = entity_profiles.get_user(user)
-        if profile is None or profile.observation_count < 3:
+        if profile is None:
             continue
 
-        # R13: like-with-like — network events against the network EWMA
-        ewma = getattr(profile, "network_event_rate", None) or profile.typical_event_count
-        ewma.update(observation_rate(user_net))  # learn this batch's network rate
+        # R13/F1: like-with-like — network events against the network EWMA.
+        # No fallback to typical_event_count: that is an all-events rate, and
+        # substituting it is exactly the A17 unit mismatch R13 set out to fix.
+        # A profile with no usable network baseline is skipped, not scored
+        # against the wrong one.
+        from nabla.baselines import EWMAProfile
+        ewma = getattr(profile, "network_event_rate", None)
+        if not isinstance(ewma, EWMAProfile):
+            logger.debug(
+                "exfil_volume: no network baseline for %s (got %s) — skipped",
+                user, type(ewma).__name__,
+            )
+            continue
+        # Gate on the baseline's OWN sample count, not the entity's all-events
+        # observation_count: a user seen 10 times with network traffic twice
+        # would otherwise be scored against a two-sample baseline.
+        if ewma.n < 3:
+            continue
+        # Score only. The baseline is learned in absorption (update_user),
+        # which runs after detection — so this is still score-then-learn.
         z = ewma.z_score(observation_rate(user_net))
         if z > sigma:
             anomalies.append({
@@ -570,6 +588,7 @@ def detect_exfiltration(
         all_anomalies.extend(volume_anomalies)
     except Exception as e:
         logger.warning("Volume anomaly detection failed: %s", e)
+        report_degradation("exfil_volume")
 
     # 2. Destination anomaly
     try:
@@ -577,6 +596,7 @@ def detect_exfiltration(
         all_anomalies.extend(dest_anomalies)
     except Exception as e:
         logger.warning("Destination anomaly detection failed: %s", e)
+        report_degradation("exfil_destination")
 
     # 3. DNS tunneling
     try:
@@ -584,6 +604,7 @@ def detect_exfiltration(
         all_anomalies.extend(dns_anomalies)
     except Exception as e:
         logger.warning("DNS tunneling detection failed: %s", e)
+        report_degradation("exfil_dns_tunneling")
 
     # 4. Staging pattern
     try:
@@ -591,6 +612,7 @@ def detect_exfiltration(
         all_anomalies.extend(staging_anomalies)
     except Exception as e:
         logger.warning("Staging pattern detection failed: %s", e)
+        report_degradation("exfil_staging")
 
     if all_anomalies:
         logger.info(

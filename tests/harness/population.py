@@ -27,6 +27,15 @@ FIRST_NAMES = [
 HOSTS = [f"WS-{i:03d}" for i in range(1, 8)] + ["SRV-DC01", "SRV-APP01", "SRV-FILE01"]
 OFFICE_IPS = [f"10.20.{i}.{j}" for i in range(1, 6) for j in range(2, 20)]
 
+# F5: the real dataset-v1 is 13 machine principals to one human, and the
+# harness was 100% human — so it could not reproduce the defect it was
+# supposed to catch. These are the principals that actually fired in the
+# rehearsal, plus the placeholder value that shows up as an entity.
+MACHINE_PRINCIPALS = [
+    "root", "SYSTEM", "EC2AMAZ-OCPNFK9$", "EC2AMAZ-5VH33S7$",
+    "svc-jenkins", "adm", "-",
+]
+
 # Hour-of-day activity shape (0-23): office hours weighted, light night tail.
 # R4 calibration note: contrast capped ~3x (peak/night) — real per-user
 # diurnal swings are 2-4x; the original 20x contrast made every high-rate
@@ -56,7 +65,7 @@ def _shaped_hour(rng: random.Random) -> int:
 class Population:
     """A stable synthetic user population with per-user Poisson rates."""
 
-    def __init__(self, seed: int = 42, n_users: int = 40):
+    def __init__(self, seed: int = 42, n_users: int = 40, machine_users: bool = True):
         self.rng = random.Random(seed)
         self.users: dict[str, dict] = {}
         names = self.rng.sample(FIRST_NAMES * 2, n_users)
@@ -70,6 +79,53 @@ class Population:
                 "ip": self.rng.choice(OFFICE_IPS),
                 "hour_bias": self.rng.gauss(0, 1.0),  # individual schedule skew
             }
+        # F5: machine principals run continuously and at high volume. That is
+        # the whole point — they are the population that made off-hours
+        # detection fire on its own baseline.
+        #
+        # Their own RNG stream, deliberately. Drawing from `self.rng` would
+        # shift every human user's rate and hour bias, silently recalibrating
+        # the population the R3/R4 ceilings were measured against — the human
+        # population must not move because a machine population was added.
+        self.machine_users: dict[str, dict] = {}
+        if machine_users:
+            mrng = random.Random(seed ^ 0x5EED)
+            for name in MACHINE_PRINCIPALS:
+                self.machine_users[name] = {
+                    "rate": math.exp(mrng.uniform(math.log(60.0), math.log(400.0))),
+                    "host": mrng.choice(HOSTS),
+                    "ip": mrng.choice(OFFICE_IPS),
+                }
+            self._machine_rng = mrng
+
+    def _emit_machine_events(self, user: str, start: datetime, minutes: float) -> list[dict]:
+        """Machine activity: uniform across all 24 hours, no diurnal shape.
+
+        A service account has no schedule to deviate from. Emitting it flat is
+        not a simplification — it is the exact condition under which
+        off-hours detection misfires on it.
+        """
+        u = self.machine_users[user]
+        expected = u["rate"] * (minutes / 60.0)
+        n = max(0, round(self._machine_rng.gauss(expected, math.sqrt(max(expected, 0.01)))))
+        events = []
+        for _ in range(n):
+            t = start + timedelta(minutes=self._machine_rng.random() * minutes)
+            events.append({
+                "timestamp": t.isoformat().replace("+00:00", "Z"),
+                "log_type": "endpoint",
+                "user": user,
+                "host": u["host"],
+                "event_code": "1",
+                "source_ip": u["ip"],
+                "dest_ip": "",
+                "process": self._machine_rng.choice(["systemd", "cron", "sshd", "python3"]),
+                "command_line": "",
+                "action": self._machine_rng.choice(
+                    ["process_start", "file_write", "network_connect"]
+                ),
+            })
+        return events
 
     def _emit_user_events(self, user: str, start: datetime, minutes: float) -> list[dict]:
         u = self.users[user]
@@ -119,6 +175,8 @@ class Population:
             events = []
             for user in self.users:
                 events.extend(self._emit_user_events(user, t, batch_minutes))
+            for user in self.machine_users:
+                events.extend(self._emit_machine_events(user, t, batch_minutes))
             events.sort(key=lambda e: e["timestamp"])
             yield t, events
             t += timedelta(minutes=batch_minutes)

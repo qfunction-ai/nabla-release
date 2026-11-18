@@ -403,3 +403,80 @@ class TestCorruptedFile:
         import nabla.incidents as inc_mod
         incidents = inc_mod.list_incidents()
         assert incidents == []
+
+
+class TestF9ContributingAnomalyIds:
+    """F9 (round-3 closeout): the finding dict carries its methods under
+    "type" — _finding_methods read a nonexistent "finding_type" key, so
+    contributing_anomaly_ids was [] on EVERY incident and no organic
+    disposition ever wrote a label. These tests go through the real
+    save_incidents against a persisted run record — the hand-crafted
+    fixtures that asserted pre-populated ids masked the bug."""
+
+    def _write_run(self, mock_settings, anomalies, run_id="run-f9"):
+        import nabla.history as hist
+        from nabla.config import get_settings
+        settings = get_settings()
+        runs_path = settings.runs_file
+        os.makedirs(os.path.dirname(runs_path), exist_ok=True)
+        with open(runs_path, "w") as f:
+            json.dump([{"run_id": run_id, "anomalies": anomalies}], f)
+
+    def test_ids_populated_through_real_save(self, mock_settings, monkeypatch):
+        """A finding of type X,Y must link the run's X and Y anomalies."""
+        import nabla.incidents as inc_mod
+        anomalies = [
+            {"anomaly_id": "aaa-f9-1", "entity": "alice", "entity_type": "user",
+             "severity": "high", "timestamp": "", "detection_method": "failed_login_ratio",
+             "details": "", "categories": [], "mitre_attack": [], "raw_score": 0.6},
+            {"anomaly_id": "aaa-f9-2", "entity": "alice", "entity_type": "user",
+             "severity": "medium", "timestamp": "", "detection_method": "entity_off_hours",
+             "details": "", "categories": [], "mitre_attack": [], "raw_score": None},
+            # Different entity: must NOT be linked
+            {"anomaly_id": "aaa-f9-3", "entity": "bob", "entity_type": "user",
+             "severity": "high", "timestamp": "", "detection_method": "failed_login_ratio",
+             "details": "", "categories": [], "mitre_attack": [], "raw_score": 0.7},
+        ]
+        self._write_run(mock_settings, anomalies)
+
+        finding = {
+            "severity": "high", "type": "entity_off_hours, failed_login_ratio",
+            "entity": "alice", "entity_type": "user", "cross_type": "single-type",
+            "log_types": ["auth"], "confidence": 0.7, "mitre_attack": [],
+        }
+        count = inc_mod.save_incidents("run-f9", [finding], supervisor_text="s")
+        assert count == 1
+
+        inc = inc_mod.list_incidents(limit=10)[0]
+        assert sorted(inc["contributing_anomaly_ids"]) == ["aaa-f9-1", "aaa-f9-2"], (
+            f"ids must be exactly alice's two methods, got {inc['contributing_anomaly_ids']}")
+
+    def test_disposition_writes_labels_from_real_ids(self, mock_settings, monkeypatch):
+        """End-to-end: the linked ids drive real label records (the demo path)."""
+        import nabla.incidents as inc_mod
+        from nabla.rl.calibration import current_labels
+        anomalies = [
+            {"anomaly_id": "lbl-f9-1", "entity": "alice", "entity_type": "user",
+             "severity": "high", "timestamp": "", "detection_method": "entity_z_score",
+             "details": "", "categories": [], "mitre_attack": [], "raw_score": 2.4},
+        ]
+        self._write_run(mock_settings, anomalies)
+
+        finding = {
+            "severity": "high", "type": "entity_z_score",
+            "entity": "alice", "entity_type": "user", "cross_type": "single-type",
+            "log_types": ["auth"], "confidence": 0.7, "mitre_attack": [],
+        }
+        inc_mod.save_incidents("run-f9", [finding], supervisor_text="s")
+        inc = inc_mod.list_incidents(limit=10)[0]
+        assert inc["contributing_anomaly_ids"] == ["lbl-f9-1"]
+
+        updated = inc_mod.update_incident(inc["incident_id"], disposition="false_positive")
+        assert updated["disposition"] == "false_positive"
+
+        labels = current_labels()
+        assert len(labels) == 1, (
+            f"an organic disposition must write exactly one label, got {len(labels)}")
+        assert labels[0]["anomaly_id"] == "lbl-f9-1"
+        assert labels[0]["detection_method"] == "entity_z_score"
+        assert labels[0]["raw_score"] == 2.4

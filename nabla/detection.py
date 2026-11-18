@@ -646,7 +646,22 @@ def detect_anomalies(
         # typical_hours instead of the fixed 22:00-06:00 window. A night-shift
         # worker who normally works 22:00-06:00 should not be flagged.
         oh_count = int(thresholds["off_hours_count"])
+        # F5: machine accounts have no habits to deviate from. `root` and
+        # `SYSTEM` working at 03:00 is the job, not an anomaly — and in the
+        # real dataset 13 of 14 principals are machine accounts, so scoring
+        # them buries the one human who matters. Excluded, and logged so the
+        # decision is visible rather than silent.
+        from nabla.utils import is_baselineable_user
+        machine_users = sorted(u for u in user_hours if not is_baselineable_user(u))
+        if machine_users:
+            logger.info(
+                "Off-hours: excluded %d machine account(s) from behavioral "
+                "baselining: %s",
+                len(machine_users), machine_users[:10],
+            )
         for user, hours in user_hours.items():
+            if not is_baselineable_user(user):
+                continue
             # Try entity baseline first
             entity_flagged = False
             if entity_profiles is not None and entity_profiles.warm_up_complete("user", user):

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from nabla import risk
 from nabla.risk import (
     THREAT_CATEGORIES,
     EntityRiskScore,
@@ -281,26 +282,50 @@ class TestComputeRiskScores:
                 )
                 assert len(store.scores) == 0
 
-    def test_inactive_entity_decays(self):
-        """An entity with a previous score but no new anomalies should decay."""
+    def test_inactive_entity_decays(self, monkeypatch):
+        """An entity with a previous score but no new anomalies should decay.
+
+        The data clock is pinned rather than inherited. `_data_clock()` falls
+        back to the wall clock when the state file is unreadable, and this
+        test used to leave `system_state_file` unset — a MagicMock, so
+        `os.path.exists()` raised TypeError, `_data_clock` swallowed it, and
+        both runs landed microseconds apart. A 24-hour half-life over two
+        microseconds is a ~1e-11 decay: a float64 coin flip, not an
+        assertion. Pinning the clock one half-life apart makes the expected
+        value exact.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "risk.json")
 
             with patch("nabla.config.get_settings") as mock_settings:
                 s = MagicMock()
                 s.entity_risk_scores_file = path
+                s.system_state_file = os.path.join(tmpdir, "state.json")
                 mock_settings.return_value = s
 
-                # First run: score alice
+                start = datetime.now(timezone.utc)
+                monkeypatch.setattr(risk, "_data_clock", lambda: start)
+
+                # First run: score alice, with the anomaly stamped at the
+                # reference instant so its age is exactly zero.
                 anomaly = self._make_anomaly(severity="high")
+                anomaly["timestamp"] = start.isoformat()
                 store1 = compute_risk_scores([anomaly], {"alice": "user"})
                 score_before = store1.get("alice").overall
+                assert score_before > 0, "setup failed: alice was never scored"
 
-                # Second run: no anomalies for alice — should decay
+                # Second run, exactly one half-life later, no anomalies for
+                # alice — the retained contribution must decay to half.
+                later = start + timedelta(hours=24)
+                monkeypatch.setattr(risk, "_data_clock", lambda: later)
                 store2 = compute_risk_scores([], {"alice": "user"})
                 score_after = store2.get("alice").overall
 
                 assert score_after < score_before
+                assert score_after <= score_before * 0.6, (
+                    f"one half-life should roughly halve the score, "
+                    f"got {score_before} -> {score_after}"
+                )
 
     def test_peak_tracksHighest(self):
         anomalies = [self._make_anomaly(severity="critical")]

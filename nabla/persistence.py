@@ -5,11 +5,36 @@ import json
 import os
 import tempfile
 from contextlib import contextmanager
+from datetime import date, datetime
 from typing import Any
 
 from nabla.log import get_logger
 
 logger = get_logger("persistence")
+
+
+def _json_default(obj: Any) -> Any:
+    """Serialize the types the stores legitimately hold; reject everything else.
+
+    F1: this was `default=str`, which silently turned any object the encoder
+    could not handle into its repr string. A profile field that was never
+    declared in its class's `_EWMA_FIELDS` therefore persisted as
+    `"EWMAProfile(value=0.0, ...)"` and reloaded as that string, which killed
+    the `exfil_volume` detector for an entire round without a single error.
+
+    A type we do not know how to serialize is a bug, not a formatting choice.
+    Raising here fails at write time, in the run that introduced it, instead
+    of corrupting state that a later run reads back.
+    """
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+    if isinstance(obj, (set, frozenset)):
+        return sorted(obj, key=str)
+    raise TypeError(
+        f"{type(obj).__name__} is not JSON-serializable "
+        f"(value: {obj!r:.120}). Declare it in the owning store's field lists "
+        f"or convert it explicitly — do not let it persist as a repr string."
+    )
 
 
 @contextmanager
@@ -61,7 +86,7 @@ def atomic_write_json(filepath: str, data: dict, indent: int = 2) -> None:
         # state files (RL state, run history) leaking sensitive data.
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump(data, f, indent=indent, default=str)
+            json.dump(data, f, indent=indent, default=_json_default)
         os.replace(tmp_path, filepath)
     except Exception:
         # Clean up temp file on any failure

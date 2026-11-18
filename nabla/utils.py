@@ -64,6 +64,141 @@ def is_off_hours(timestamp: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Machine accounts (F5)
+# ---------------------------------------------------------------------------
+#
+# Behavioral baselines describe a PERSON. A service account has no habits to
+# deviate from: `root` and `SYSTEM` doing privileged work at 03:00 is the job,
+# not an anomaly. Scoring them produces incidents that are always wrong, and
+# those incidents bury the ones that matter.
+#
+# The real dataset-v1 is 13 machine principals to 1 human (`helpdeskone`), so
+# this is not a corner case — it is most of the population.
+#
+# The rules below are ordered from unambiguous to heuristic. Anything matched
+# is EXCLUDED from behavioral baselining, never hidden: callers log what they
+# excluded so an operator can see the decision and correct it.
+
+# Windows machine accounts always end in '$' (EC2AMAZ-OCPNFK9$). Structural.
+_MACHINE_SUFFIX = "$"
+
+# Unix system principals. Fixed and well-known; these UIDs exist on every
+# POSIX system and never belong to a person.
+_UNIX_SYSTEM_PRINCIPALS = frozenset({
+    "root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail",
+    "news", "uucp", "proxy", "backup", "list", "irc", "gnats", "nobody",
+    "adm", "operator", "halt", "shutdown", "ftp", "tss", "sshd", "ntp",
+    "chrony", "messagebus", "syslog", "uuidd", "www-data", "httpd", "apache",
+    "nginx", "mysql", "postgres", "redis", "mongodb", "elasticsearch",
+    "systemd-network", "systemd-resolve", "systemd-timesync",
+})
+
+# Windows system principals, as they appear in Security event logs.
+_WINDOWS_SYSTEM_PRINCIPALS = frozenset({
+    "system", "local system", "network service", "local service",
+    "anonymous logon", "defaultaccount", "wdagutilityaccount",
+    "nt authority\\system", "nt authority\\local service",
+    "nt authority\\network service", "nt authority\\anonymous logon",
+})
+
+# Naming conventions that declare "this is a service account".
+_SERVICE_PREFIXES = ("svc-", "svc_", "svc.", "service-", "service_", "sa-", "sa_")
+_SERVICE_SUFFIXES = ("-svc", "_svc", ".svc", "-service", "_service")
+
+# Well-known automation and infrastructure principals with no structural
+# marker. Curated rather than exhaustive — extend per environment with
+# NABLA_MACHINE_ACCOUNTS (comma-separated) or NABLA_HUMAN_ACCOUNTS to force
+# an account back into baselining.
+_KNOWN_AUTOMATION = frozenset({
+    "jenkins", "gitlab-runner", "github-actions", "runner", "buildbot",
+    "ansible", "terraform", "puppet", "chef-client", "salt", "rundeck",
+    "octopus", "bamboo", "teamcity", "circleci", "travis", "artifactory",
+    "nexus", "sonar", "snyk", "aqua", "sysdig",
+    "nagios", "zabbix", "icinga", "sensu", "prometheus", "grafana",
+    "telegraf", "collectd", "datadog", "solarwinds", "kaseya", "lansweeper",
+    "pdq", "tanium", "qualys", "nessus", "rapid7", "tenable",
+    "wsus", "sccm", "vss", "intune", "jamf", "kandji",
+    "splunk", "splunkd", "logstash", "filebeat", "winlogbeat", "metricbeat",
+    "kafka", "zookeeper", "airflow", "nifi", "hadoop", "spark",
+    "vcenter", "esxi", "vmware", "citrix", "okta", "duo",
+    "ec2-user", "gce-user", "azureuser", "cloud-user",
+})
+
+# Values that mean "no user recorded", not "a user we do not know".
+_PLACEHOLDER_PRINCIPALS = frozenset({
+    "", "-", "--", "n/a", "na", "none", "null", "nil", "unknown", "?",
+    "0", "nouser", "no user",
+})
+
+
+def is_machine_account(name: str, extra: set[str] | None = None) -> bool:
+    """True if `name` is a machine/service principal rather than a person.
+
+    Behavioral baselines describe people. A service account has no habits to
+    deviate from, so scoring one produces incidents that are always wrong and
+    drown out the ones that matter.
+
+    Args:
+        name: The account name as it appears in the logs.
+        extra: Additional names to treat as machine accounts (environment
+            specific, from NABLA_MACHINE_ACCOUNTS).
+
+    Returns:
+        True if the account should be excluded from behavioral baselining.
+    """
+    if name is None:
+        return True
+    raw = str(name).strip()
+    lowered = raw.lower()
+
+    if lowered in _PLACEHOLDER_PRINCIPALS:
+        return True
+    if extra and lowered in {e.strip().lower() for e in extra}:
+        return True
+    # Windows machine account: trailing '$'
+    if raw.endswith(_MACHINE_SUFFIX):
+        return True
+    if lowered in _UNIX_SYSTEM_PRINCIPALS or lowered in _WINDOWS_SYSTEM_PRINCIPALS:
+        return True
+    if lowered in _KNOWN_AUTOMATION:
+        return True
+    if lowered.startswith(_SERVICE_PREFIXES) or lowered.endswith(_SERVICE_SUFFIXES):
+        return True
+    return False
+
+
+def machine_account_overrides() -> set[str]:
+    """Environment-specific machine accounts from NABLA_MACHINE_ACCOUNTS."""
+    import os
+
+    raw = os.environ.get("NABLA_MACHINE_ACCOUNTS", "")
+    return {part.strip() for part in raw.split(",") if part.strip()}
+
+
+def human_account_overrides() -> set[str]:
+    """Accounts forced back into baselining, from NABLA_HUMAN_ACCOUNTS.
+
+    The escape hatch for a false positive: an operator who knows `ftp` is a
+    person at their site should not have to patch the code.
+    """
+    import os
+
+    raw = os.environ.get("NABLA_HUMAN_ACCOUNTS", "")
+    return {part.strip().lower() for part in raw.split(",") if part.strip()}
+
+
+def is_baselineable_user(name: str) -> bool:
+    """True if this user should be behaviorally baselined.
+
+    Combines the machine-account predicate with the human override, which
+    always wins.
+    """
+    if str(name).strip().lower() in human_account_overrides():
+        return True
+    return not is_machine_account(name, extra=machine_account_overrides())
+
+
+# ---------------------------------------------------------------------------
 # Path traversal protection — shared allowed directories
 # ---------------------------------------------------------------------------
 

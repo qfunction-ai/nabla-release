@@ -257,12 +257,19 @@ def save_incidents(
             # New incident
             # R8 (round 3): per-FINDING scope — dispositions label only the
             # anomalies this finding rests on (its constituent methods), not
-            # everything the entity did that run
+            # everything the entity did that run. F9 (round 3 closeout): the
+            # finding dict carries its methods under "type" (correlation's
+            # assess_findings), NOT "finding_type" — that key exists only on
+            # the incident we are building here. Reading it off the finding
+            # made the set {""} on every path, contributing_anomaly_ids was
+            # always [], and no organic disposition ever wrote a label (the
+            # seeded-label demos masked it). Use the local finding_type,
+            # already derived from finding["type"] above.
             _finding_methods = {
                 m.strip()
-                for m in str(finding.get("finding_type", "")).split(",")
+                for m in str(finding_type).split(",")
                 if m.strip()
-            } | {str(finding.get("finding_type", "")).strip()}
+            } | {str(finding_type).strip()}
             entity_evidence = _extract_entity_evidence(evidence_text, entity)
             if not entity_evidence:
                 joined = _build_finding_evidence(finding, run_anomalies)

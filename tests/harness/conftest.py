@@ -82,11 +82,18 @@ def drive_pipeline(entries, tmp_path, monkeypatch, detection_phase="detection",
                         lambda p: {"phase": "detection", "data_newest_ts": None})
 
     from nabla.connectors.base import Watchlist
-    result = pdet.run_detection(
-        _Client(), {"supervisor": "agent-harness"}, s, entries,
-        Watchlist(), siem_entries_ingested=len(entries),
-        effective_source="file", skip_graph=not run_graph,
-    )
+    # F3/F4: collect detector degradations. Detectors swallow their own
+    # exceptions by design, so a detector can fail on every single run and
+    # the run still looks clean — exfil_volume did exactly that for a whole
+    # round. Collecting here makes the failure visible to the assertions.
+    from nabla.degradations import collect_degradations
+    degradations: list[str] = []
+    with collect_degradations(degradations):
+        result = pdet.run_detection(
+            _Client(), {"supervisor": "agent-harness"}, s, entries,
+            Watchlist(), siem_entries_ingested=len(entries),
+            effective_source="file", skip_graph=not run_graph,
+        )
 
     # Absorption (the orchestration step the harness must exercise): group
     # entries by entity and update profiles — WITHOUT this, profiles never
@@ -125,4 +132,5 @@ def drive_pipeline(entries, tmp_path, monkeypatch, detection_phase="detection",
         "detection": result,
         "risk_store": store,
         "risk_error": risk_error,
+        "degradations": degradations,
     }

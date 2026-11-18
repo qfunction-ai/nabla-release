@@ -69,45 +69,84 @@ class TestSuspiciousDomain:
 # ---------------------------------------------------------------------------
 
 class TestVolumeAnomaly:
-    def test_high_volume_triggers(self):
-        entries = [
-            {"user": "alice", "action": "network_connect", "type": "network"}
-            for _ in range(50)
+    """F1: these used MagicMock profiles, which is why they passed while the
+    detector was dead — a mock answers z_score() no matter what, and never
+    crosses the serialization boundary where the real bug lived. They now use
+    real UserProfile/EWMAProfile objects and a real store."""
+
+    @staticmethod
+    def _store_with_network_baseline(user: str, rate: float, spread: float = 1.0,
+                                     n: int = 10):
+        """A real EntityProfileStore holding a warmed network-event baseline."""
+        from nabla.baselines import EWMAProfile, EntityProfileStore
+
+        store = EntityProfileStore.__new__(EntityProfileStore)
+        store.users, store.hosts, store.ips = {}, {}, {}
+        profile = store.get_or_create_user(user)
+        profile.observation_count = n
+        profile.network_event_rate = EWMAProfile(
+            value=rate, variance=spread ** 2, alpha=0.3, n=n
+        )
+        return store
+
+    @staticmethod
+    def _network_entries(user: str, count: int, hour: int = 14):
+        """`count` network events inside a single UTC hour.
+
+        observation_rate buckets by event time, so entries without timestamps
+        read as 0/hr and nothing can ever fire.
+        """
+        return [
+            {
+                "user": user, "action": "network_connect", "type": "network",
+                "timestamp": f"2026-11-01T{hour:02d}:{i % 60:02d}:00Z",
+            }
+            for i in range(count)
         ]
-        # Mock entity profile with high EWMA
-        profile = MagicMock()
-        profile.observation_count = 10
-        ewma = MagicMock()
-        ewma.value = 5.0
-        ewma.z_score.return_value = 4.0  # Well above sigma
-        profile.typical_event_count = ewma
-        profile.network_event_rate = ewma  # R13: the dedicated baseline
 
-        profiles = MagicMock()
-        profiles.get_user.return_value = profile
+    def test_high_volume_triggers(self):
+        entries = self._network_entries("alice", 50)
+        store = self._store_with_network_baseline("alice", rate=5.0, spread=1.0)
 
-        anomalies = _detect_volume_anomaly(entries, entity_profiles=profiles, sigma=3.0)
+        anomalies = _detect_volume_anomaly(entries, entity_profiles=store, sigma=3.0)
         assert len(anomalies) >= 1
         assert anomalies[0]["detection_method"] == "exfil_volume"
 
     def test_normal_volume_no_trigger(self):
-        entries = [
-            {"user": "alice", "action": "network_connect", "type": "network"}
-            for _ in range(5)
-        ]
-        profile = MagicMock()
-        profile.observation_count = 10
-        ewma = MagicMock()
-        ewma.value = 10.0
-        ewma.z_score.return_value = 0.5  # Below sigma
-        profile.typical_event_count = ewma
-        profile.network_event_rate = ewma  # R13
+        entries = self._network_entries("alice", 5)
+        store = self._store_with_network_baseline("alice", rate=5.0, spread=1.0)
 
-        profiles = MagicMock()
-        profiles.get_user.return_value = profile
-
-        anomalies = _detect_volume_anomaly(entries, entity_profiles=profiles, sigma=3.0)
+        anomalies = _detect_volume_anomaly(entries, entity_profiles=store, sigma=3.0)
         assert len(anomalies) == 0
+
+    def test_cold_network_baseline_is_skipped_not_guessed(self):
+        """F1: with no network samples, skip — never fall back to the
+        all-events rate (that is the A17 unit mismatch R13 set out to fix)."""
+        entries = self._network_entries("alice", 500)
+        store = self._store_with_network_baseline("alice", rate=5.0, n=0)
+        # An all-events baseline exists and is tiny; the old code would have
+        # scored 500/hr against it and fired loudly on a cold profile.
+        store.get_user("alice").typical_event_count.value = 1.0
+
+        anomalies = _detect_volume_anomaly(entries, entity_profiles=store, sigma=3.0)
+        assert anomalies == []
+
+    def test_survives_a_save_load_cycle(self, tmp_path):
+        """F1 WITNESS: the detector must still work on a profile that has been
+        through the store's own serialization. RED before the fix — the field
+        reloaded as the string 'EWMAProfile(value=...)' and z_score raised."""
+        from nabla.baselines import EntityProfileStore
+
+        path = str(tmp_path / "entity_profiles.json")
+        store = self._store_with_network_baseline("alice", rate=5.0, spread=1.0)
+        store.path = path
+        store.save()
+
+        reloaded = EntityProfileStore(path)  # __init__ loads from disk
+        entries = self._network_entries("alice", 50)
+        anomalies = _detect_volume_anomaly(entries, entity_profiles=reloaded, sigma=3.0)
+        assert len(anomalies) == 1
+        assert anomalies[0]["detection_method"] == "exfil_volume"
 
     def test_no_profiles(self):
         entries = [
