@@ -36,15 +36,29 @@ MACHINE_PRINCIPALS = [
     "svc-jenkins", "adm", "-",
 ]
 
-# Hour-of-day activity shape (0-23): office hours weighted, light night tail.
-# R4 calibration note: contrast capped ~3x (peak/night) — real per-user
+# Hour-of-day activity shape (0-23): day-active office population.
+# R4 calibration note: contrast capped ~3x (peak/shoulder) — real per-user
 # diurnal swings are 2-4x; the original 20x contrast made every high-rate
 # user a baseline outlier on each day/night crossing (the harness's own
 # noise-floor teaching moment: shaped-but-stable is what "normal" means
 # to a baseline-relative detector)
+# N1 follow-through (round 4, found live — three layers deep):
+# 1. The old minute-weighted shaping was a no-op inside 5-minute batches
+#    (every minute shares one hour weight), so the population was uniform
+#    around the clock: 33% night share, every human tripping off-hours
+#    nightly, hidden only by wall-clock risk decay. The honest clock (N2)
+#    exposed it; the count is now shaped by the hour weight.
+# 2. A thin night tail (~1.5% share) is the WORST of both worlds for this
+#    product's semantics: below hour_is_unusual's per-hour min_share (2%)
+#    forever — never "typical" — while its Poisson tail still produces 3+
+#    night-hour batches, which is exactly the off_hours_count threshold.
+#    fen fired 7 times on 0.2-0.75%/hr shares. A normal population for a
+#    detector that defines human night activity as off-hours is DAY-ACTIVE;
+#    night is the attack's signature, not the background. Trace weights
+#    (not zero) keep timestamps realistic without ever reaching threshold.
 _HOUR_WEIGHTS = [
-    0.12, 0.10, 0.10, 0.10, 0.10, 0.12, 0.4, 1.0, 1.4, 1.6, 1.7, 1.7,
-    1.5, 1.5, 1.6, 1.6, 1.5, 1.4, 1.2, 1.1, 1.0, 0.8, 0.4, 0.2,
+    0.01, 0.01, 0.01, 0.01, 0.01, 0.01, 0.4, 1.0, 1.4, 1.6, 1.7, 1.7,
+    1.5, 1.5, 1.6, 1.6, 1.5, 1.4, 1.2, 1.1, 1.0, 0.8, 0.01, 0.01,
 ]
 _HOUR_CUM = []
 _acc = 0.0
@@ -129,30 +143,20 @@ class Population:
 
     def _emit_user_events(self, user: str, start: datetime, minutes: float) -> list[dict]:
         u = self.users[user]
-        expected = u["rate"] * (minutes / 60.0)
+        # N1 follow-through (round 4): shape the COUNT by the hour weight —
+        # the old code drew an hour-independent count then "weighted" the
+        # minute-pick inside a 5-minute span, where every minute shares one
+        # hour weight. The shaping cancelled to zero and the population was
+        # uniform around the clock (33% night share) — every human tripped
+        # off-hours nightly, and only wall-clock risk decay hid it. The
+        # honest clock (N2) made the noise visible; this makes it absent.
+        hh = start.hour
+        shape = _HOUR_WEIGHTS[hh] / 1.7  # peak weight -> 1.0
+        expected = u["rate"] * (minutes / 60.0) * shape
         n = max(0, round(self.rng.gauss(expected, math.sqrt(max(expected, 0.01)))))
         events = []
         for _ in range(n):
-            # 5-min batch: pick a shaped hour consistent with the batch window,
-            # then a uniform minute inside it
-            span_start = start
-            span_end = start + timedelta(minutes=minutes)
-            # choose time weighted by hour shape across the span
-            t = span_start
-            # simple approach: weighted pick among the minutes in the span
-            total_min = int(minutes)
-            weights = []
-            for m in range(total_min):
-                hh = (span_start + timedelta(minutes=m)).hour
-                weights.append(_HOUR_WEIGHTS[hh] * math.exp(-abs(u["hour_bias"]) if hh in (8, 9, 17, 18) else 0))
-            tot = sum(weights) or 1.0
-            r = self.rng.random() * tot
-            acc = 0.0
-            for m, w in enumerate(weights):
-                acc += w
-                if r <= acc:
-                    t = span_start + timedelta(minutes=m)
-                    break
+            t = start + timedelta(minutes=self.rng.random() * minutes)
             events.append({
                 "timestamp": t.isoformat().replace("+00:00", "Z"),
                 "log_type": "endpoint",

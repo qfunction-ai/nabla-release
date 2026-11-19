@@ -111,11 +111,13 @@ class DetectionMethodBandit:
 
     @classmethod
     def from_dict(cls, data: dict) -> "DetectionMethodBandit":
-        """Deserialize bandit state."""
+        """Deserialize bandit state. Methods missing from the stored
+        alpha/beta (a partial state file) get uniform priors rather than
+        a KeyError on first sample."""
         bandit = cls(methods=data.get("methods", list(DETECTION_METHODS)))
-        bandit.alpha = data.get("alpha", {m: 1.0 for m in bandit.methods})
-        bandit.beta = data.get("beta", {m: 1.0 for m in bandit.methods})
-        bandit.update_counts = data.get("update_counts", {m: 0 for m in bandit.methods})
+        bandit.alpha = {m: float(data.get("alpha", {}).get(m, 1.0)) for m in bandit.methods}
+        bandit.beta = {m: float(data.get("beta", {}).get(m, 1.0)) for m in bandit.methods}
+        bandit.update_counts = {m: int(data.get("update_counts", {}).get(m, 0)) for m in bandit.methods}
         return bandit
 
     def save(self, filepath: str) -> None:
@@ -129,6 +131,13 @@ class DetectionMethodBandit:
 
         The bandit state is stored under the "bandit" key in the
         combined RL state file.
+
+        N6 (round 4): schema-gated one-time reset. State files without
+        schema>=2 carry alpha/beta learned by the retired text parser
+        (which mislabeled findings — that state scales risk weights
+        under wrong premises). Loading a pre-schema file yields uniform
+        priors, and the file is rewritten atomically WITH the marker so
+        the reset runs exactly once. Post-schema state loads normally.
         """
         if not os.path.exists(filepath):
             logger.info("No bandit state file at %s, using defaults", filepath)
@@ -137,6 +146,19 @@ class DetectionMethodBandit:
             full_data = json.load(f)
         # Extract bandit section from combined state file
         data = full_data.get("bandit", full_data)
+        if int(full_data.get("schema", 1)) < 2:
+            logger.warning(
+                "Bandit state pre-schema (learned by the retired text parser) — "
+                "resetting to uniform priors (one-time, schema marker 2)")
+            bandit = cls()
+            try:
+                full_data["schema"] = 2
+                full_data["bandit"] = {"alpha": {}, "beta": {}}
+                from nabla.persistence import atomic_write_json
+                atomic_write_json(filepath, full_data)
+            except OSError as e:
+                logger.warning("Could not stamp schema marker: %s", e)
+            return bandit
         bandit = cls.from_dict(data)
         logger.info("Loaded bandit state from %s (%d updates)",
                     filepath, sum(bandit.update_counts.values()))

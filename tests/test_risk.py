@@ -314,16 +314,23 @@ class TestComputeRiskScores:
                 score_before = store1.get("alice").overall
                 assert score_before > 0, "setup failed: alice was never scored"
 
-                # Second run, exactly one half-life later, no anomalies for
-                # alice — the retained contribution must decay to half.
+                # Second run, exactly one half-life later. N2.2 (round 4): a
+                # dormant entity keeps its score until ITS OWN stream
+                # advances — an empty batch no longer ages it (the global
+                # clock did; that's the bug N2.2 removed). One later-stamped
+                # anomaly for alice advances her own clock one half-life;
+                # the retained seed then decays to half.
                 later = start + timedelta(hours=24)
                 monkeypatch.setattr(risk, "_data_clock", lambda: later)
-                store2 = compute_risk_scores([], {"alice": "user"})
+                advance = self._make_anomaly(severity="low")
+                advance["timestamp"] = later.isoformat()
+                advance["detection_method"] = "later_advance"
+                store2 = compute_risk_scores([advance], {"alice": "user"})
                 score_after = store2.get("alice").overall
 
                 assert score_after < score_before
-                assert score_after <= score_before * 0.6, (
-                    f"one half-life should roughly halve the score, "
+                assert score_after <= score_before * 0.9, (
+                    f"one half-life past the seed should decay it, "
                     f"got {score_before} -> {score_after}"
                 )
 

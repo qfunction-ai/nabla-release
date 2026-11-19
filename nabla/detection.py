@@ -221,20 +221,25 @@ def _get_field(entry: dict, *names: str) -> str:
 
 
 def _parse_ts(ts: str) -> datetime | None:
-    """Parse a timestamp string, always returning timezone-aware UTC.
-
-    Delegates to the shared parse_iso_timestamp utility.
-
-    Args:
-        ts: ISO format timestamp string.
-
-    Returns:
-        Timezone-aware datetime, or None if invalid.
-    """
+    """Parse an ISO timestamp; None when absent/unparseable."""
     from nabla.utils import parse_iso_timestamp
     return parse_iso_timestamp(ts)
 
 
+def _newest_event_time(entries: list[dict]) -> str:
+    """N2.3 (round 4): an anomaly must carry EVENT time or risk scoring
+    treats it as absent — ten detectors shipped `"timestamp": ""` and their
+    anomalies silently contributed nothing to risk once absent-means-absent
+    landed (the harness caught it: attack fired, score stayed 0.0). Newest
+    triggering event's raw stamp; empty string when the events carry none
+    (genuinely absent data stays absent — the degradation counts it).
+    """
+    best = ""
+    for e in entries:
+        ts = e.get("timestamp", "")
+        if ts > best:
+            best = ts
+    return best
 
 
 def parse_lolbin_block(block_text: str) -> list[tuple[str, list[str], list[str]]]:
@@ -539,29 +544,35 @@ def detect_anomalies(
                 if profile and profile.observation_count >= 3:
                     # A8: rate vs rate — the run's events-per-hour against
                     # the per-hour EWMA (count-vs-rate compared mismatched units)
-                    from nabla.baselines import observation_rate
-                    # R4 (round 3): hour-bucketed per-user rate — the batch-span
-                    # divisor (even user-scoped) swung on scheduler-sized batches
-                    run_rate = observation_rate(events)
-                    entity_z = profile.typical_event_count.z_score(run_rate)
-                    if entity_z > entity_z_sigma:
-                        anomalies.append({
-                            "type": "entity_event_count_spike",
-                            "severity": "high" if entity_z > entity_z_sigma + 1.0 else "medium",
-                            "user": user,
-                            "source_ip": list(user_ips[user])[0] if user_ips[user] else "",
-                            "timestamp": events[0].get("timestamp", ""),
-                            "details": (
-                                f"User {user} has {count} events "
-                                f"(entity_z={entity_z:.1f}, ewma={profile.typical_event_count.value:.1f}, "
-                                f"std={profile.typical_event_count.std:.1f}, threshold={entity_z_sigma})"
-                            ),
-                            "detection_method": "entity_z_score",
-                            "z_score": round(entity_z, 2),
-                            "raw_score": round(entity_z, 3),
-                            "entity_baseline": True,
-                        })
-                        continue  # Entity baseline handled it, skip batch check
+                    # N4 (round 4): the read is the CURRENT HOUR's count — the
+                    # profile's open-hour accumulator plus this batch's events
+                    # in that hour — against the complete-hour EWMA. The old
+                    # batch mean read 1.2/6/17.7 for the same steady user at
+                    # 5-min/1-day/3-day cadences; baselines built at one
+                    # cadence lied at another.
+                    from nabla.baselines import current_hour_rate
+                    run_rate = current_hour_rate(events, profile)
+                    if run_rate is not None:
+                        entity_z = profile.typical_event_count.z_score(run_rate)
+                        if entity_z > entity_z_sigma:
+                            anomalies.append({
+                                "type": "entity_event_count_spike",
+                                "severity": "high" if entity_z > entity_z_sigma + 1.0 else "medium",
+                                "user": user,
+                                "source_ip": list(user_ips[user])[0] if user_ips[user] else "",
+                                "timestamp": events[0].get("timestamp", ""),
+                                "details": (
+                                    f"User {user} has {count} events "
+                                    f"(entity_z={entity_z:.1f}, ewma={profile.typical_event_count.value:.1f}, "
+                                    f"std={profile.typical_event_count.std:.1f}, threshold={entity_z_sigma})"
+                                ),
+                                "detection_method": "entity_z_score",
+                                "z_score": round(entity_z, 2),
+                                "raw_score": round(entity_z, 3),  # N10: calibratable
+                                "raw_score": round(entity_z, 3),
+                                "entity_baseline": True,
+                            })
+                            continue  # Entity baseline handled it, skip batch check
             # Fall back to batch-level z-score (A15: with n users the max
             # achievable z is sqrt(n-1) — below 10 users the 2.0 threshold is
             # unreachable; skip the batch statistic rather than run math that
@@ -582,6 +593,7 @@ def detect_anomalies(
                         ),
                         "detection_method": "z_score",
                         "z_score": round(z_score, 2),
+                        "raw_score": round(z_score, 3),  # N10: calibratable
                     })
 
     # --- 3. Failed login ratio (brute force) ---
@@ -609,7 +621,7 @@ def detect_anomalies(
                             "severity": "high",
                             "user": user,
                             "source_ip": list(user_ips[user])[0] if user_ips[user] else "",
-                            "timestamp": "",
+                            "timestamp": _newest_event_time(user_events.get(user, [])),  # N2.3: event time, never empty
                             "details": (
                                 f"User {user} has {auth['failure']} failures "
                                 f"out of {total_auth} auth events "
@@ -629,7 +641,7 @@ def detect_anomalies(
                     "severity": "high",
                     "user": user,
                     "source_ip": list(user_ips[user])[0] if user_ips[user] else "",
-                    "timestamp": "",
+                    "timestamp": _newest_event_time(user_events.get(user, [])),  # N2.3: event time, never empty
                     "details": (
                         f"User {user} has {auth['failure']} failures "
                         f"out of {total_auth} auth events "
@@ -683,7 +695,7 @@ def detect_anomalies(
                             "severity": "medium",
                             "user": user,
                             "source_ip": list(user_ips[user])[0] if user_ips[user] else "",
-                            "timestamp": "",
+                            "timestamp": _newest_event_time(user_events.get(user, [])),  # N2.3: event time, never empty
                             "details": (
                                 f"User {user} has {len(unusual_hours)} events "
                                 f"during atypical hours "
@@ -693,6 +705,7 @@ def detect_anomalies(
                             ),
                             "detection_method": "entity_off_hours",
                             "entity_baseline": True,
+                            "raw_score": len(unusual_hours),  # N10: calibratable
                         })
                         entity_flagged = True
             # Fall back to fixed off-hours window
@@ -704,12 +717,13 @@ def detect_anomalies(
                         "severity": "medium",
                         "user": user,
                         "source_ip": list(user_ips[user])[0] if user_ips[user] else "",
-                        "timestamp": "",
+                        "timestamp": _newest_event_time(user_events.get(user, [])),  # N2.3: event time, never empty
                         "details": (
                             f"User {user} has {len(off_hours)} events "
                             f"during off-hours (22:00-06:00 UTC, threshold={oh_count})"
                         ),
                         "detection_method": "off_hours",
+                        "raw_score": len(off_hours),  # N10: calibratable
                     })
 
     # --- 5. Multi-IP for single user (impossible travel) ---
@@ -734,7 +748,7 @@ def detect_anomalies(
                             "severity": "high" if len(new_ips) >= 3 else "medium",
                             "user": user,
                             "source_ip": ", ".join(sorted(new_ips)),
-                            "timestamp": "",
+                            "timestamp": _newest_event_time(user_events.get(user, [])),  # N2.3: event time, never empty
                             "details": (
                                 f"User {user} appeared from {len(new_ips)} new IPs: "
                                 f"{', '.join(sorted(new_ips))} "
@@ -743,6 +757,7 @@ def detect_anomalies(
                             ),
                             "detection_method": "entity_new_ip",
                             "entity_baseline": True,
+                            "raw_score": len(new_ips),  # N10: calibratable
                         })
                         entity_flagged = True
             # Fall back to batch-level multi-IP check
@@ -752,9 +767,10 @@ def detect_anomalies(
                     "severity": "high",
                     "user": user,
                     "source_ip": ", ".join(ips),
-                    "timestamp": "",
+                    "timestamp": _newest_event_time(user_events.get(user, [])),  # N2.3: event time, never empty
                     "details": f"User {user} appeared from {len(ips)} unique IPs: {', '.join(ips)} (threshold={ip_count})",
                     "detection_method": "multi_ip",
+                    "raw_score": len(ips),  # N10: calibratable
                 })
 
     # --- 6. Activity spike ---
@@ -775,9 +791,10 @@ def detect_anomalies(
             if entity_profiles is not None and entity_profiles.warm_up_complete("user", user):
                 profile = entity_profiles.get_user(user)
                 if profile and profile.typical_event_count.value > 0:
-                    from nabla.baselines import observation_rate
-                    run_rate = observation_rate(events)  # R4 bucketed
-                    entity_spike = run_rate > profile.typical_event_count.value * spike_mult
+                    from nabla.baselines import current_hour_rate
+                    run_rate = current_hour_rate(events, profile)  # N4: current hour
+                    entity_spike = (run_rate is not None
+                                    and run_rate > profile.typical_event_count.value * spike_mult)
                     if entity_spike:
                         anomalies.append({
                             "type": "entity_activity_spike",
@@ -792,6 +809,7 @@ def detect_anomalies(
                             ),
                             "detection_method": "entity_activity_spike",
                             "entity_baseline": True,
+                            "raw_score": round(run_rate / profile.typical_event_count.value, 3),  # N10: calibratable (multiplier units)
                         })
                         entity_flagged = True
             # Fall back to batch-level spike check
@@ -804,6 +822,7 @@ def detect_anomalies(
                     "timestamp": events[0].get("timestamp", ""),
                     "details": f"User {user} has {count} events vs mean {mean_count:.1f} (threshold={spike_mult}x)",
                     "detection_method": "activity_spike",
+                    "raw_score": round(count / mean_count, 3),  # N10: calibratable (multiplier units)
                 })
 
     # --- 7. LOLBIN abuse ---
@@ -965,6 +984,16 @@ def detect_anomalies(
             proc = _get_field(e, "process", "Image", "NewProcessName").lower().replace(".exe", "")
             if host and proc:
                 host_processes[host].add(proc)
+        # N2.3: host detectors need event time too — newest endpoint
+        # event per host (host_processes carries names only).
+        host_newest_ts: dict[str, str] = {}
+        for e in entries:
+            if _get_field(e, "type") != "endpoint":
+                continue
+            h = _get_field(e, "host", "Computer")
+            ts = _get_field(e, "timestamp")
+            if h and ts and ts > host_newest_ts.get(h, ""):
+                host_newest_ts[h] = ts
 
         baseline_procs_map = baseline_host_procs or {}
         for host, procs in host_processes.items():
@@ -994,7 +1023,7 @@ def detect_anomalies(
                         "severity": "high" if len(new_procs) >= entity_new_proc_thresh * 2 else "medium",
                         "user": "",
                         "source_ip": "",
-                        "timestamp": "",
+                        "timestamp": host_newest_ts.get(host, ""),  # N2.3: event time
                         "details": (
                             f"{len(new_procs)} new processes on host {host} "
                             f"(known: {len(entity_profile.typical_processes)}, "
@@ -1004,6 +1033,7 @@ def detect_anomalies(
                         "detection_method": "entity_new_process",
                         "host": host,
                         "entity_baseline": True,
+                        "raw_score": len(new_procs),  # N10: calibratable
                     })
                 # Also flag individual new processes that are LOLBINs or attack tools
                 for proc in new_procs:
@@ -1017,7 +1047,7 @@ def detect_anomalies(
                             "severity": "high",
                             "user": "",
                             "source_ip": "",
-                            "timestamp": "",
+                            "timestamp": host_newest_ts.get(host, ""),  # N2.3: event time
                             "details": f"New {('attack' if is_attack else 'LOLBIN')} process {proc} on host {host} (not in entity baseline)",
                             "detection_method": "entity_unusual_process",
                             "host": host,
@@ -1041,7 +1071,7 @@ def detect_anomalies(
                             "severity": "medium",
                             "user": "",
                             "source_ip": "",
-                            "timestamp": "",
+                            "timestamp": host_newest_ts.get(host, ""),  # N2.3: event time
                             "details": f"Process {proc} first seen on host {host} (not in baseline)",
                             "detection_method": "unusual_process",
                             "host": host,
@@ -1895,9 +1925,10 @@ def detect_anomalies(
                 # Signal 1: Event count deviation from entity EWMA
                 count = len(events)
                 if profile.typical_event_count.variance > 0:
-                    from nabla.baselines import observation_rate
-                    event_z = profile.typical_event_count.z_score(
-                        observation_rate(events))  # R4 bucketed
+                    from nabla.baselines import current_hour_rate
+                    _cr = current_hour_rate(events, profile)  # N4: current hour
+                    event_z = (profile.typical_event_count.z_score(_cr)
+                               if _cr is not None else 0.0)
                     if event_z > 1.5:  # Lower threshold for composite
                         signals += 1
                         signal_details.append(f"event_count_z={event_z:.1f}")
@@ -1945,6 +1976,7 @@ def detect_anomalies(
                         "detection_method": "entity_behavior_composite",
                         "entity_baseline": True,
                         "composite_score": round(composite_score, 3),
+                        "raw_score": round(composite_score, 3),  # N10: calibratable
                     })
 
             # --- 22b. Host composite: combines new processes, new users, auth anomalies ---
@@ -2010,7 +2042,7 @@ def detect_anomalies(
                         "severity": "high" if composite_score >= 0.75 else "medium",
                         "user": "",
                         "source_ip": "",
-                        "timestamp": "",
+                        "timestamp": _get_field(e, "timestamp"),  # N2.3: event time
                         "details": (
                             f"Host {host}: {signals}/{total_signals} behavioral signals "
                             f"(score={composite_score:.2f}, threshold={composite_threshold}): "
@@ -2020,6 +2052,7 @@ def detect_anomalies(
                         "host": host,
                         "entity_baseline": True,
                         "composite_score": round(composite_score, 3),
+                        "raw_score": round(composite_score, 3),  # N10: calibratable
                     })
 
     # Compute baselines for snapshot storage
@@ -2059,6 +2092,10 @@ def detect_anomalies(
 
     # Phase 2 (remediation plan): stable anomaly IDs on every anomaly
     _stamp_anomaly_ids(anomalies)
+    # N7 (round 4): source event ids on every anomaly — the chain gate
+    # dedups distinct events by these; without them three detectors on ONE
+    # event counted as three and flagged false chains
+    _stamp_event_ids(anomalies, entries)
 
     return anomalies, baselines
 
@@ -2093,3 +2130,49 @@ def _stamp_anomaly_ids(anomalies: list[dict]) -> None:
         else:
             seen[digest] = 1
         a["anomaly_id"] = digest
+
+
+_EVENT_IDS_CAP = 50
+
+
+def _stamp_event_ids(anomalies: list[dict], entries: list[dict]) -> None:
+    """N7 (round 4): every anomaly carries event_ids — the stable ids of
+    the source events it derived from, matched by the same entity key the
+    detectors aggregate on plus the anomaly's cited timestamp.
+
+    One post-pass instead of edits at 31 construction sites (the round-2
+    lesson: regex edits into class bodies are fragile; one honest pass in
+    one place is reviewable). Capped at _EVENT_IDS_CAP so an aggregate
+    anomaly over a burst hour cannot bloat every incident record.
+    Idempotent: re-stamping (pipeline stamps the merged list again after
+    exfil/GCN/provenance join) overwrites with identical values.
+    """
+    import hashlib
+
+    by_user: dict[tuple[str, str], list[str]] = defaultdict(list)
+    by_host: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for e in entries:
+        eid = hashlib.sha256(
+            json.dumps(e, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        # mirror the detectors' aggregate key derivation exactly
+        u = e.get("user", e.get("src_ip", e.get("client_ip", "unknown")))
+        ts = e.get("timestamp", "")
+        if ts:
+            if u:
+                by_user[(str(u), ts)].append(eid)
+            h = e.get("host", "")
+            if h:
+                by_host[(str(h), ts)].append(eid)
+    for a in anomalies:
+        ts = a.get("timestamp", "")
+        ids: list[str] = []
+        if ts:
+            u = a.get("user", "")
+            if u:
+                ids = by_user.get((str(u), ts), [])
+            if not ids:
+                h = a.get("host", "")
+                if h:
+                    ids = by_host.get((str(h), ts), [])
+        a["event_ids"] = ids[:_EVENT_IDS_CAP]

@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from nabla.config import get_settings
 from nabla.persistence import ensure_data_path, load_json_safe
 
 
@@ -44,7 +45,7 @@ def new_run(
         "started_at": datetime.now(timezone.utc).isoformat(),
         "finished_at": None,
         "source": source,
-        "operator": operator or os.getenv("NABLA_OPERATOR", ""),
+        "operator": operator or _audit_operator(),
         "watchlist_groups": watchlist_groups,
         "log_types": log_types,
         "log_count": log_count,
@@ -54,6 +55,15 @@ def new_run(
         "success": False,
         "error": None,
     }
+
+
+def _audit_operator(explicit: str | None = None) -> str:
+    """N14 (round 4): audit operator identity via Settings — the raw
+    NABLA_OPERATOR env read was on a key that wasn't even a Settings
+    field (unreachable in Docker, invisible to the plumbing guard)."""
+    if explicit:
+        return explicit
+    return get_settings().operator or ""
 
 
 def complete_run(

@@ -26,4 +26,4 @@ USER appuser
 
 # Default command — conditional: web server, scheduler mode, or idle for CLI use
 # Set NABLA_WEB_ENABLED=1 to run the web server, NABLA_SCHEDULE_ENABLED=1 for scheduler
-CMD ["sh", "-c", "if [ \"$NABLA_WEB_ENABLED\" = \"1\" ]; then nabla-web; elif [ \"$NABLA_SCHEDULE_ENABLED\" = \"1\" ]; then nabla schedule --interval \"${NABLA_SCHEDULE_INTERVAL:-5}\" --log-type \"${NABLA_SCHEDULE_LOG_TYPES:-all}\" --log-count \"${NABLA_SCHEDULE_LOG_COUNT:-50}\"; else sleep infinity; fi"]
+CMD ["sh", "-c", "if [ \"$NABLA_WEB_ENABLED\" = \"1\" ]; then nabla-web; elif [ \"$NABLA_SCHEDULE_ENABLED\" = \"1\" ]; then nabla schedule --interval \"${NABLA_SCHEDULE_INTERVAL_MINUTES:-5}\" --log-type \"${NABLA_SCHEDULE_LOG_TYPES:-all}\" --log-count \"${NABLA_SCHEDULE_LOG_COUNT:-50}\"; else sleep infinity; fi"]

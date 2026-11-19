@@ -34,6 +34,41 @@ FINDINGS_SUMMARY_CAP = 100
 NARRATIVE_CAP = 10_000  # characters
 
 
+# N5 (round 4): the quarantine trigger's method hold list — the families
+# whose severity ceiling is MEDIUM ALWAYS (detection.py's severity map,
+# extracted in the round-4 plan): they gate attack classes that severity
+# cannot express (the 3am insider fires entity_off_hours medium forever;
+# under a severity-only gate that batch would absorb into hour_histogram
+# and the compromise schedule would go baseline-normal within nights —
+# A10 reborn). entity_unusual_process is belt-and-suspenders: it fires
+# high (lolbin/attack only) so severity already reaches it.
+QUARANTINE_HOLD_METHODS = {
+    "off_hours", "entity_off_hours",
+    "unusual_process", "entity_unusual_process",
+    "pre_flagged",
+    "cusum",
+}
+
+_QUARANTINE_SEVERITIES = {"high", "critical"}
+
+
+def _quarantine_flagged_entities(anomalies: list[dict]) -> set[str]:
+    """N5: entities worth a baseline hold. severity >= high OR a
+    medium-ceiling hold-list method. Medium statistical noise (z at 2.1
+    fires medium) no longer freezes a baseline per flag; the hold list
+    keeps the attack classes only those detectors can see."""
+    flagged: set[str] = set()
+    for a in anomalies:
+        entity = a.get("entity", a.get("user", ""))
+        if not entity:
+            continue
+        sev = str(a.get("severity", "medium")).lower()
+        method = str(a.get("detection_method", a.get("type", "")))
+        if sev in _QUARANTINE_SEVERITIES or method in QUARANTINE_HOLD_METHODS:
+            flagged.add(entity)
+    return flagged
+
+
 def _summarize_findings_for_run(findings: list) -> list[dict]:
     """Project correlation findings into the compact persisted shape."""
     out: list[dict] = []
@@ -131,9 +166,12 @@ def run_pipeline(
 
     Returns {step: response} for each step.
     """
+    if gcn_lof_enabled:
+        _gcn_lof_warning()
     if client is None:
         from nabla.client import get_client
         client = get_client()
+
 
     agents = find_all_agents(client)
     if len(agents) < 1:
@@ -236,11 +274,19 @@ def run_pipeline(
 
         # A10: flag quarantine for entities that fired anomalies this run
         # (detection phase only — baseline-phase runs ARE the absorption)
+        # N5 (round 4): severity gate + explicit hold list. The old code
+        # flagged EVERY entity with ANY anomaly — medium statistical noise
+        # froze baselines for a week per flag. Gate on severity
+        # {high, critical} OR method in QUARANTINE_HOLD_METHODS (the
+        # medium-CEILING families that gate attack classes severity can't
+        # express: off_hours, unusual_process, pre_flagged, cusum-drift —
+        # review REQUIRED 1: severity-only would make the 3am-insider case
+        # absorb straight into baselines, A10 reborn).
         if detection.phase != "baseline" and detection.anomalies:
             try:
                 from nabla.baselines import flag_quarantine
                 from nabla.risk import _data_clock
-                flagged = list({a.get("entity", a.get("user", "")) for a in detection.anomalies if a.get("entity", a.get("user"))})
+                flagged = _quarantine_flagged_entities(detection.anomalies)
                 if flagged:
                     flag_quarantine(flagged, data_clock=_data_clock())
             except Exception as e:
@@ -250,6 +296,19 @@ def run_pipeline(
         # Update entity profiles (skip for ad-hoc file uploads)
         if detection.entity_profiles is not None and not skip_baseline:
             try:
+                # N3 (round 4) + STRONG 2: drain approved batches FIRST, at
+                # pipeline start, for ALL approved entities — inside this
+                # load-save window (the API path never writes profiles; it
+                # raced the pipeline and lost, which is how held data died).
+                # Also drain TTL-released holds (final-review REQUIRED 1:
+                # expiry means "review window elapsed, treat as normal").
+                from nabla.baselines import drain_approved_pending, drain_released_pending
+                approved = drain_approved_pending(detection.entity_profiles)
+                ttl_applied = drain_released_pending(detection.entity_profiles)
+                if approved or ttl_applied:
+                    logger.info(
+                        "Quarantine drain: %d approved batches applied, %d TTL-released",
+                        approved, ttl_applied)
                 from nabla.baselines import group_entries_by_entity
                 groups = group_entries_by_entity(ingestion.entries)
                 for (entity_type, entity_id), group_entries in groups.items():
@@ -439,6 +498,11 @@ def run_pipeline(
             "temporal": len(detection.temporal_anomalies) if detection else 0,
             "exfiltration": getattr(detection, "exfiltration_count", 0),
         }
+        # N7: chain-gate fallback uses (0 once every merged anomaly carries
+        # event_ids; >0 means a producer is not stamping — visible, not silent)
+        run_record["temporal_stats"] = (
+            dict(getattr(detection, "temporal_stats", {})) if detection else {}
+        )
         run_record["supervisor_narrative"] = (
             (results.get("supervisor") or "")[:NARRATIVE_CAP] or None
         )
@@ -465,3 +529,19 @@ def run_pipeline(
         save_run(run_record)
 
     return results
+
+
+def _gcn_lof_warning() -> None:
+    """N11 (round 4): GCN-LOF stays disabled by default; when explicitly
+    turned on, say WHY, loudly — an operator flipping the flag must know
+    what the benign-rate ceiling was before trusting its output."""
+    import sys
+    print(
+        "WARNING: GCN-LOF is EXPERIMENTAL and disabled by default for a "
+        "reason (round 3, R3): under the current z-score/bank anchoring "
+        "it flagged 13-18% of BENIGN entities (77% of them high "
+        "severity), poisoning quarantine and correlation. Full fix "
+        "(percentile redesign + harness <1% benign ceiling) is deferred "
+        "— treat every GCN-LOF finding as unvetted signal.",
+        file=sys.stderr,
+    )

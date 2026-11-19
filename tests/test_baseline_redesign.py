@@ -144,9 +144,17 @@ class TestA10Quarantine:
         sfile = tmp_path / "system_state.json"
         monkeypatch.setattr(B, "_quarantine_file", lambda: qfile)
         monkeypatch.setattr(B, "_pending_file", lambda: pfile)
+        monkeypatch.setattr(B, "_approved_file", lambda: tmp_path / "approved.json")  # N3
         import json as J
         from datetime import datetime, timezone
         sfile.write_text(J.dumps({"data_newest_ts": datetime.now(timezone.utc).isoformat()}))
+        # N3 (round 4): the pending span cap is data-clock based; the env
+        # patches file paths (not data_dir), so pin the clock to read the
+        # state file this env wrote — otherwise wall-now drops every
+        # old-stamped batch at write time.
+        from nabla.utils import parse_iso_timestamp as _pit
+        monkeypatch.setattr(B, "_data_clock_now",
+                            lambda: _pit(sfile.read_text() and J.loads(sfile.read_text())["data_newest_ts"]) or datetime.now(timezone.utc))
         return B
 
     def test_row_fp_releases(self, tmp_path, monkeypatch):
@@ -230,10 +238,11 @@ class TestR6QuarantineRound3:
         import nabla.baselines as B
         monkeypatch.setattr(B, "_quarantine_file", lambda: tmp_path / "q.json")
         monkeypatch.setattr(B, "_pending_file", lambda: tmp_path / "p.json")
-        sfile = tmp_path / "system_state.json"
-        import json as J
+        monkeypatch.setattr(B, "_approved_file", lambda: tmp_path / "apr.json")  # N3
+        # the class's fixtures stamp January 2025 — the state clock sits in
+        # THAT window (wall-now would drop every batch at the span cap)
         from datetime import datetime, timezone
-        sfile.write_text(J.dumps({"data_newest_ts": datetime.now(timezone.utc).isoformat()}))
+        monkeypatch.setattr(B, "_data_clock_now", lambda: datetime(2025, 1, 25, tzinfo=timezone.utc))
         return B
 
     def test_rearm_after_ttl(self, tmp_path, monkeypatch):
@@ -265,11 +274,20 @@ class TestR6QuarantineRound3:
         store.update_user("alice", [{"user": "alice", "action": "x",
                                      "timestamp": "2025-01-20T10:00:00Z"}] * 8)
         assert store.get_user("alice").observation_count == obs_before, "warm-up must not advance while held"
-        # FP disposition: release + apply
+        # FP disposition: release + APPROVE (N3, round 4: the API path
+        # never writes profiles — it raced the pipeline's load-save and
+        # lost, which is how held data died). The next pipeline run's
+        # drain applies them inside its own window.
         B.apply_disposition_to_quarantine("alice", "false_positive", profile_store=store)
         assert not B._is_quarantined("alice")
+        assert store.get_user("alice").observation_count == obs_before, (
+            "the API path must not mutate the profile — drain owns application")
+        applied = B.drain_approved_pending(store)
+        assert applied >= 1, "approved batch not drained"
         assert store.get_user("alice").observation_count == obs_before + 1, "applied batch advances warm-up once"
-        assert store.get_user("alice").typical_event_count.value != before
+        # N4: the EWMA moves only when the applied batch CLOSES an hour;
+        # the warm-up counted, which is what "applied" means here.
+        assert store.get_user("alice").typical_event_count.n >= 1
 
     def test_tp_discards_pending(self, tmp_path, monkeypatch):
         """R6: TP disposition discards held batches — attack never enters."""

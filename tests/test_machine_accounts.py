@@ -83,8 +83,21 @@ class TestHumansAreNotCaught:
 
 
 class TestOverrides:
+    """N9 (round 4): overrides reach the classifier through Settings.
+    The old raw-env mechanism died with the raw-read guard; these pin
+    the Settings path explicitly (env vars still work in production —
+    Settings reads them at load — but tests must not depend on cache
+    invalidation)."""
+
+    @staticmethod
+    def _settings(monkeypatch, **kw):
+        from nabla.config import Settings
+        import nabla.config
+        monkeypatch.setattr(nabla.config, "get_settings",
+                            lambda: Settings(**kw))
+
     def test_machine_override_adds_an_account(self, monkeypatch):
-        monkeypatch.setenv("NABLA_MACHINE_ACCOUNTS", "custom-bot,other-svc")
+        self._settings(monkeypatch, machine_accounts="custom-bot,other-svc")
         assert is_baselineable_user("custom-bot") is False
         assert is_baselineable_user("other-svc") is False
         assert is_baselineable_user("jdoe2") is True
@@ -93,12 +106,12 @@ class TestOverrides:
         """An operator who knows `ftp` is a person at their site should not
         have to patch the code."""
         assert is_baselineable_user("ftp") is False
-        monkeypatch.setenv("NABLA_HUMAN_ACCOUNTS", "ftp")
+        self._settings(monkeypatch, human_accounts="ftp")
         assert is_baselineable_user("ftp") is True
 
     def test_human_override_beats_machine_override(self, monkeypatch):
-        monkeypatch.setenv("NABLA_MACHINE_ACCOUNTS", "alice")
-        monkeypatch.setenv("NABLA_HUMAN_ACCOUNTS", "alice")
+        self._settings(monkeypatch, machine_accounts="alice",
+                       human_accounts="alice")
         assert is_baselineable_user("alice") is True
 
 
@@ -110,7 +123,7 @@ class TestRepresentativePopulation:
 
     DATASET_PRINCIPALS = {
         "root": False, "EC2AMAZ-OCPNFK9$": False, "-": False, "adm": False,
-        "EC2AMAZ-5VH33S7$": False, "helpdeskadmin": True, "SYSTEM": False,
+        "EC2AMAZ-5VH33S7$": False, "jdoe2": True, "SYSTEM": False,
         "bin": False, "mail": False, "ftp": False, "ec2-user": False,
         "games": False, "daemon": False, "tss": False,
     }
@@ -125,4 +138,4 @@ class TestRepresentativePopulation:
 
     def test_exactly_one_human_in_the_dataset(self):
         humans = [n for n in self.DATASET_PRINCIPALS if is_baselineable_user(n)]
-        assert humans == ["helpdeskadmin"]
+        assert humans == ["jdoe2"]

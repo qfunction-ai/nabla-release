@@ -267,8 +267,11 @@ class TestOperatorIdentity:
         assert run["operator"] == "testuser"
 
     def test_new_run_operator_from_env(self, monkeypatch):
+        """N14 (round 4): operator identity via Settings, not raw env."""
+        from nabla.config import Settings
         from nabla.history import new_run
-        monkeypatch.setenv("NABLA_OPERATOR", "envuser")
+        monkeypatch.setattr("nabla.history.get_settings",
+                            lambda: Settings(operator="envuser"))
         run = new_run(["auth"], 100)
         assert run["operator"] == "envuser"
 

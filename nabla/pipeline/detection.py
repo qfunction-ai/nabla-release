@@ -39,6 +39,7 @@ class DetectionResult:
     temporal_anomalies: list[dict] = field(default_factory=list)
     exfiltration_count: int = 0
     temporal_chains: list = field(default_factory=list)
+    temporal_stats: dict = field(default_factory=dict)
     graph_context_text: str = ""
     anomalous_entities: set[str] = field(default_factory=set)
     env_context: dict = field(default_factory=dict)
@@ -233,15 +234,22 @@ def run_detection(
     # Temporal Correlation Engine (skippable: --no-graph)
     if not skip_graph and len(result.anomalies) >= 2:
         try:
+            # N7: stamp source event ids on the MERGED list (GCN-LOF and
+            # provenance anomalies join after detect_anomalies stamped its
+            # own) so the chain gate's fallback stays dead for every input
+            from nabla.detection import _stamp_event_ids
+            _stamp_event_ids(result.anomalies, all_entries)
             from nabla.temporal import detect_temporal_chains_with_context
             temporal_thresholds = {
                 "temporal_chain_window_minutes": thresholds.get("temporal_chain_window_minutes", 30),
                 "temporal_min_chain_length": thresholds.get("temporal_min_chain_length", 3),
             }
+            result.temporal_stats = {}
             result.temporal_anomalies, result.temporal_chains = detect_temporal_chains_with_context(
                 all_entries,
                 result.anomalies,
                 temporal_thresholds,
+                stats=result.temporal_stats,
             )
             from nabla.detection import _stamp_anomaly_ids as _stamp
             _stamp(result.temporal_anomalies)

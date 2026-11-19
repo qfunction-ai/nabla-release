@@ -102,12 +102,21 @@ class EWMAProfile:
             observation: Value to compare against the EWMA.
 
         Returns:
-            Z-score (number of standard deviations from the EWMA).
-            Returns 0.0 if variance is zero.
+            Z-score (number of standard deviations from the EWMA),
+            against the floored std. Returns 0.0 only if std is zero
+            (unreachable for count EWMAs — the R4 floor guarantees
+            std >= sqrt(value) when value >= 1).
+
+        N10 (round 4): the old guard short-circuited on variance <= 0
+        BEFORE consulting std — a perfectly regular user (variance
+        exactly 0) scored z=0 on ANY burst, bypassing the R4 Poisson
+        floor that exists for precisely that regime. The floor makes
+        the guard redundant; the guard made the floor dead code.
         """
-        if self.variance <= 0:
+        std = self.std
+        if std <= 0:
             return 0.0
-        return (observation - self.value) / self.std
+        return (observation - self.value) / std
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-compatible dict.
@@ -246,6 +255,10 @@ class _ProfileMixin:
     _SET_FIELDS: set[str] = set()
     _RECENCY_FIELDS: dict[str, int] = {}  # field -> max_size
     _EWMA_FIELDS: set[str] = set()
+    # N1: histogram fields (int-hour-keyed dicts). Empty default so classes
+    # without one don't crash the shared to_dict/_from_dict lookups;
+    # UserProfile overrides with {"hour_histogram"}.
+    _HISTOGRAM_FIELDS: set[str] = set()
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-compatible dict using field introspection."""
@@ -258,6 +271,11 @@ class _ProfileMixin:
                 result[f.name] = sorted(val)
             elif f.name in self._EWMA_FIELDS:
                 result[f.name] = val.to_dict()
+            elif f.name in self._HISTOGRAM_FIELDS:
+                # N1 (round 4): JSON stringifies int dict keys; emit them as
+                # strings explicitly so the loader's int() repair is the only
+                # conversion (no silent str-keyed dicts reaching runtime).
+                result[f.name] = {str(k): v for k, v in val.items()}
             else:
                 result[f.name] = val
         return result
@@ -275,6 +293,15 @@ class _ProfileMixin:
                 kwargs[f.name] = set(data.get(f.name, []))
             elif f.name in cls._EWMA_FIELDS:
                 kwargs[f.name] = EWMAProfile.from_dict(data.get(f.name, {}))
+            elif f.name in cls._HISTOGRAM_FIELDS:
+                # N1 (round 4): convert string keys (JSON artifact) back to
+                # int hours, merging duplicates defensively — a store written
+                # by the pre-fix serializer could hold both "10" and 10 if a
+                # repair ran mid-life; sum is the lossless merge for counts.
+                hist: dict[int, float] = {}
+                for k, v in (data.get(f.name) or {}).items():
+                    hist[int(k)] = hist.get(int(k), 0.0) + float(v)
+                kwargs[f.name] = hist
             else:
                 default = f.default if f.default is not dataclasses.MISSING else ""
                 if isinstance(default, (int, float)):
@@ -305,7 +332,6 @@ class UserProfile(_ProfileMixin):
 
     _SET_FIELDS = set()
     _RECENCY_FIELDS = {"typical_ips": 50, "typical_hours": 48}
-    _HISTOGRAM_FIELDS = {"hour_histogram"}
 
     def __post_init__(self):
         # A11: accept plain sets/lists at construction (tests, legacy callers)
@@ -321,6 +347,11 @@ class UserProfile(_ProfileMixin):
         "typical_event_count", "auth_failure_ratio", "off_hours_ratio",
         "network_event_rate",
     }
+    # N1: the R10 histogram — UserProfile is the only class with one; the
+    # serializer converts int hour keys to strings explicitly and the loader
+    # repairs them, because JSON cannot carry int keys and R10 shipped
+    # without either half (every hour read unusual after any reload).
+    _HISTOGRAM_FIELDS = {"hour_histogram"}
 
     entity_id: str = ""
     first_seen: str = ""
@@ -339,6 +370,16 @@ class UserProfile(_ProfileMixin):
     # compared network counts against the all-events EWMA (a subset vs its
     # superset; z systematically understated, detector rarely fired)
     network_event_rate: "EWMAProfile" = field(default_factory=lambda: EWMAProfile())
+    # N4 (round 4): the absolute-hour accumulator — the partial current
+    # hour's count, closed as ONE complete-hour EWMA observation when a
+    # later hour arrives. Batches of any size compose: two half-hour
+    # batches make one observation of the full hour, not two of halves.
+    open_hour: str = ""      # "YYYY-MM-DDTH" of the accumulating hour
+    open_count: int = 0
+    # Same accumulator shape for the NETWORK-event rate (exfil_volume's
+    # baseline must be cadence-independent for the same reason).
+    net_open_hour: str = ""
+    net_open_count: int = 0
     typical_actions: dict[str, float] = field(default_factory=dict)
     auth_failure_ratio: EWMAProfile = field(default_factory=EWMAProfile)
     off_hours_ratio: EWMAProfile = field(default_factory=EWMAProfile)
@@ -521,11 +562,13 @@ class EntityProfileStore:
         return _is_quarantined(entity_id)
 
     def _bump_quarantine_clock(self, entity_id: str) -> None:
-        q = _load_quarantine()
-        ent = q.get(entity_id)
-        if ent:
-            ent["batches_held"] = ent.get("batches_held", 0) + 1
-            _save_quarantine(q)
+        from nabla.persistence import file_lock
+        with file_lock(str(_quarantine_file())):
+            q = _load_quarantine()
+            ent = q.get(entity_id)
+            if ent:
+                ent["batches_held"] = ent.get("batches_held", 0) + 1
+                _save_quarantine(q)
 
     def get_user(self, entity_id: str) -> UserProfile | None:
         """Get a user profile by entity ID.
@@ -671,8 +714,13 @@ class EntityProfileStore:
         # Event RATE EWMA (R4): hour-bucketed observation rate — batch-span
         # division swung wildly on scheduler-sized batches (2 events/1min =
         # 120/hr); event-time bucketing is boundary-independent
-        from nabla.baselines import observation_rate
-        profile.typical_event_count.update(observation_rate(entries))
+        # N4 (round 4): absolute-hour absorption — one EWMA observation
+        # per COMPLETE hour, composed across batches via the profile's
+        # open_hour/open_count accumulator. The old mean-per-active-hour
+        # observation tracked batch size (a 3-day batch read 3x a day
+        # batch), so baselines built at one cadence lied at another.
+        from nabla.baselines import absorb_absolute_hours, absolute_hour_counts
+        absorb_absolute_hours(profile, absolute_hour_counts(entries))
 
         # F1: the NETWORK-event rate baseline is learned here, in absorption,
         # like every other baseline — not inside the detector that scores
@@ -681,12 +729,18 @@ class EntityProfileStore:
         # learn meant the detector could never fire. That is why R13's fix was
         # hollow even before the serialization bug was found. Detection runs
         # before absorption, so this still scores-then-learns.
+        # N4: same accumulator shape — the network EWMA observes complete
+        # hours too (exfil_volume's baseline must be cadence-independent
+        # for the same reason the all-events one must).
         net_entries = [
             e for e in entries
             if e.get("action") == "network_connect" or e.get("type") == "network"
         ]
         if net_entries:
-            profile.network_event_rate.update(observation_rate(net_entries))
+            absorb_absolute_hours(
+                profile, absolute_hour_counts(net_entries),
+                ewma_attr="network_event_rate",
+                open_hour_attr="net_open_hour", open_count_attr="net_open_count")
 
         # IPs (only publicly routable — private IPs are not useful for
         # impossible-travel detection and would cause false positives)
@@ -711,10 +765,17 @@ class EntityProfileStore:
                         profile.typical_hours.add(hour, seen_at=str(ts))
                 except (ValueError, IndexError):
                     pass  # silent by design: unparseable timestamp in profile data (2026-09 sweep)
-        for hour, n in _batch_hours.items():
+        # N1b (round 4): decay ONCE per update, outside the batch-hours loop —
+        # the R10 comment always said "per-update is the design"; nesting the
+        # decay inside the loop made a batch spanning 3 hours apply 0.99^3.
+        # Decay FIRST, then add: the batch's own hours must not be taxed on
+        # arrival (add-then-decay would shrink fresh counts by 1% every batch,
+        # systematically understating activity).
+        if _batch_hours:
             for h in profile.hour_histogram:
                 profile.hour_histogram[h] *= 0.99
-            profile.hour_histogram[hour] = profile.hour_histogram.get(hour, 0.0) + float(n)
+            for hour, n in _batch_hours.items():
+                profile.hour_histogram[hour] = profile.hour_histogram.get(hour, 0.0) + float(n)
 
         # Actions
         action_counter: Counter[str] = Counter()
@@ -966,6 +1027,26 @@ def hourly_counts(entries: list[dict]) -> "dict[int, int]":
     return buckets
 
 
+def absolute_hour_counts(entries: list[dict]) -> "dict[str, int]":
+    """N4 (round 4): events per ABSOLUTE hour ("YYYY-MM-DDTH") of event time.
+
+    Hour-of-DAY buckets (0-23) merge days — a 3-day batch reads the same
+    24 buckets as a 1-day batch with 3x the counts, so the derived rate
+    tracked batch size, not behavior. Absolute hours make one EWMA
+    observation equal one COMPLETE hour regardless of how batches split
+    it.
+    """
+    from nabla.utils import parse_iso_timestamp
+
+    buckets: dict[str, int] = {}
+    for e in entries:
+        dt = parse_iso_timestamp(str(e.get("timestamp", "")))
+        if dt is not None:
+            key = dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
+            buckets[key] = buckets.get(key, 0) + 1
+    return buckets
+
+
 def observation_rate(entries: list[dict]) -> float:
     """The per-hour rate observation for a batch, hour-bucketed (R4).
 
@@ -973,15 +1054,69 @@ def observation_rate(entries: list[dict]) -> float:
     boundaries: a 5-minute scheduler slice of a 6/hr user reads ~6, not
     120. Single-event batches read as 1/hr (the conservative direction —
     understates, never overstates).
+
+    N4 (round 4): this function remains for DETECTION-side reads of a
+    batch's current-hour rate and for legacy callers; ABSorption uses
+    absorb_absolute_hours (complete-hour observations via the profile's
+    accumulator), which is what makes baselines cadence-independent.
     """
     buckets = hourly_counts(entries)
     if not buckets:
         return 0.0
-    # Weight by each bucket's coverage: hours fully inside the batch count
-    # 1.0; the boundary hours count their fraction — approximated here by
-    # treating every active hour equally (the conservative simplification;
-    # partial hours understate, which is the safe direction for spikes)
     return sum(buckets.values()) / len(buckets)
+
+
+def absorb_absolute_hours(profile, buckets: "dict[str, int]",
+                          ewma_attr: str = "typical_event_count",
+                          open_hour_attr: str = "open_hour",
+                          open_count_attr: str = "open_count") -> int:
+    """N4 (round 4): absorb absolute-hour buckets into a rate EWMA via the
+    profile's accumulator. A batch CLOSES every hour it completes (each
+    closed hour = one complete-hour observation) and accumulates its
+    newest hour as the profile's open state. Late (out-of-order) hours
+    merge into their own bucket WITHOUT reopening the accumulator.
+
+    Returns the number of EWMA observations made.
+    """
+    if not buckets:
+        return 0
+    ewma = getattr(profile, ewma_attr)
+    open_hour = getattr(profile, open_hour_attr)
+    open_count = getattr(profile, open_count_attr)
+    obs = 0
+    for hour in sorted(buckets):
+        if hour == open_hour:
+            open_count += buckets[hour]
+        elif hour > (open_hour or ""):
+            if open_hour:
+                ewma.update(float(open_count))  # close the finished hour
+                obs += 1
+            open_hour, open_count = hour, buckets[hour]
+        else:
+            # Late data: older than the accumulator's hour. Close it as
+            # its own observation if it is a NEW absolute hour (dedup by
+            # the hour key); never move the accumulator backwards.
+            ewma.update(float(buckets[hour]))
+            obs += 1
+    setattr(profile, open_hour_attr, open_hour)
+    setattr(profile, open_count_attr, open_count)
+    return obs
+
+
+def current_hour_rate(entries: list[dict], profile) -> float | None:
+    """N4 (round 4): the DETECTION-side read — this batch's events in the
+    profile's open (or newly-opened) hour, PLUS the accumulator's count
+    for that same hour. Returns None when the batch carries no parseable
+    stamps (absent means absent)."""
+    buckets = absolute_hour_counts(entries)
+    if not buckets:
+        return None
+    newest = max(buckets)
+    if newest == getattr(profile, "open_hour", ""):
+        total = getattr(profile, "open_count", 0) + buckets[newest]
+    else:
+        total = buckets[newest]
+    return float(total)
 
 
 # ---------------------------------------------------------------------------
@@ -1008,6 +1143,10 @@ def _get_field(entry: dict, *names: str) -> str:
 # ── A10 quarantine (truth table per the reviewed plan) ─────────────────────
 
 _QUARANTINE_TTL_DAYS = 7.0
+# N5 (round 4, Decision 1 — Ryan): the TP hold is time-boxed, 14 data-clock
+# days. Discard pending (already done), then auto-release: a remediated
+# account resumes learning.
+_TP_HOLD_DAYS = 14.0
 
 
 def _quarantine_file() -> "Path":
@@ -1025,11 +1164,12 @@ def _load_quarantine() -> dict:
 
 
 def _save_quarantine(q: dict) -> None:
-    import json as _json
-    from nabla.persistence import atomic_write_json, file_lock
+    """N15 (round 4): UNLOCKED inner writer — callers hold file_lock
+    across the whole read-modify-write cycle. Locking only the write is
+    how a disposition racing a pipeline run lost updates."""
+    from nabla.persistence import atomic_write_json
     p = str(_quarantine_file())
-    with file_lock(p):
-        atomic_write_json(p, q)
+    atomic_write_json(p, q)
 
 
 def flag_quarantine(entity_ids: list[str], data_clock: "datetime|None" = None) -> None:
@@ -1037,16 +1177,18 @@ def flag_quarantine(entity_ids: list[str], data_clock: "datetime|None" = None) -
     absorption until dispositioned (or TTL). Called by the pipeline post-
     detection with the entities that produced anomalies."""
     from datetime import datetime, timezone
-    q = _load_quarantine()
-    now = (data_clock or datetime.now(timezone.utc)).isoformat()
-    for eid in entity_ids:
-        ent = q.get(eid, {})
-        if not _is_quarantined(eid):  # R6: new OR TTL-expired — (re)arm
-            ent.update({"held": True, "since": now,
-                        "batches_held": ent.get("batches_held", 0),
-                        "indefinite": ent.get("indefinite", False)})
-        q[eid] = ent
-    _save_quarantine(q)
+    from nabla.persistence import file_lock
+    with file_lock(str(_quarantine_file())):
+        q = _load_quarantine()
+        now = (data_clock or datetime.now(timezone.utc)).isoformat()
+        for eid in entity_ids:
+            ent = q.get(eid, {})
+            if not _is_quarantined(eid):  # R6: new OR TTL-expired — (re)arm
+                ent.update({"held": True, "since": now,
+                            "batches_held": ent.get("batches_held", 0),
+                            "indefinite": ent.get("indefinite", False)})
+            q[eid] = ent
+        _save_quarantine(q)
 
 
 def release_quarantine(entity_id: str, data_clock: "datetime | None" = None) -> None:
@@ -1055,26 +1197,39 @@ def release_quarantine(entity_id: str, data_clock: "datetime | None" = None) -> 
     never enters baselines). R6: released_at stamps NOW, not the original
     since (the review's minor catch)."""
     from datetime import datetime, timezone
-    q = _load_quarantine()
-    ent = q.get(entity_id)
-    if ent:
-        ent["held"] = False
-        ent["indefinite"] = False
-        ent["released_at"] = (data_clock or datetime.now(timezone.utc)).isoformat()
-        _save_quarantine(q)
+    from nabla.persistence import file_lock
+    with file_lock(str(_quarantine_file())):
+        q = _load_quarantine()
+        ent = q.get(entity_id)
+        if ent:
+            ent["held"] = False
+            ent["indefinite"] = False
+            ent["released_at"] = (data_clock or datetime.now(timezone.utc)).isoformat()
+            _save_quarantine(q)
 
 
 def hold_quarantine(entity_id: str) -> None:
-    """true_positive disposition: confirmed attack — hold indefinitely."""
-    q = _load_quarantine()
-    ent = q.get(entity_id)
-    if ent:
+    """true_positive disposition: confirmed attack — hold, time-boxed.
+
+    N5 (round 4, Decision 1): 14 data-clock days, not indefinite. A
+    remediated account must resume learning; the indefinite freeze was
+    the R6 half this closes. The hold's `since` anchors at the data
+    clock so replayed data expires it honestly."""
+    from nabla.persistence import file_lock
+    with file_lock(str(_quarantine_file())):
+        q = _load_quarantine()
+        ent = q.get(entity_id) or {}
         ent["held"] = True
-        ent["indefinite"] = True
+        ent["indefinite"] = False  # N5: time-boxed, never forever
+        ent["since"] = _data_clock_now().isoformat()  # re-anchor the 14d window
+        ent["tp_hold_days"] = _TP_HOLD_DAYS
+        q[entity_id] = ent
         _save_quarantine(q)
 
 
-_PENDING_CAP = 5  # held batches per entity (R6: hold, don't discard)
+_PENDING_CAP = 5  # legacy batch-count cap — superseded by N3's span/count cap
+_PENDING_SPAN_DAYS = 7.0  # N3: cap by data-clock span (the hold can last 7 days)
+_PENDING_EVENT_CAP = 5000  # N3: per-entity event cap (memory bound)
 
 
 def _pending_file() -> "Path":
@@ -1092,26 +1247,140 @@ def _load_pending() -> dict:
 
 
 def _save_pending(pend: dict) -> None:
-    import json as _json
-    from nabla.persistence import atomic_write_json, file_lock
+    """N15 (round 4): UNLOCKED inner writer — callers hold file_lock."""
+    from nabla.persistence import atomic_write_json
     p = str(_pending_file())
-    with file_lock(p):
-        atomic_write_json(p, pend)
+    atomic_write_json(p, pend)
+
+
+def _pending_entries_stamps(entries: list[dict]) -> str:
+    return max((e.get("timestamp", "") for e in entries), default="")
 
 
 def hold_pending(entity_id: str, entries: list[dict]) -> None:
     """Hold a quarantined entity's batch for later application (R6).
 
-    Capped per entity; the newest batches survive (the oldest overflow
-    drops — a compromise recorded here: attack-length bursts beyond the
-    cap lose their earliest batches if never dispositioned).
+    N3 (round 4): capped by data-clock span (7 days — the hold's own TTL)
+    and per-entity event count (5,000), NOT by batch count. The old
+    5-batch cap was 25 minutes at the 5-minute schedule while the hold
+    lasted 7 days: most held data would have been dropped by the cap even
+    if the disposition path had worked. Batches older than the span cap
+    drop at write time; the newest events win on the count cap.
     """
-    pend = _load_pending()
-    batches = pend.setdefault(entity_id, [])
-    batches.append(entries)
-    if len(batches) > _PENDING_CAP:
-        batches[:] = batches[-_PENDING_CAP:]
-    _save_pending(pend)
+    from nabla.utils import parse_iso_timestamp
+    from nabla.persistence import file_lock
+    with file_lock(str(_pending_file())):
+        pend = _load_pending()
+        batches = pend.setdefault(entity_id, [])
+        batches.append(entries)
+        # span cap: drop whole batches older than the cutoff
+        from datetime import timedelta as _td
+        now_dc = _data_clock_now()
+        cutoff = now_dc - _td(days=_PENDING_SPAN_DAYS)
+        kept = []
+        for b in batches:
+            newest = parse_iso_timestamp(_pending_entries_stamps(b) or "")
+            if newest is not None and newest < cutoff:
+                continue  # older than the span cap — drop
+            kept.append(b)
+        # count cap: newest events win
+        total = sum(len(b) for b in kept)
+        while total > _PENDING_EVENT_CAP and kept:
+            drop = kept.pop(0)
+            total -= len(drop)
+        pend[entity_id] = kept
+        _save_pending(pend)
+
+
+def approve_pending(entity_id: str) -> int:
+    """FP/BTP disposition: move the entity's held batches to the approved
+    list. The NEXT pipeline run drains them into the profile inside its
+    own load-save window (N3: the API path never writes profiles — it
+    raced the pipeline's load-save and lost). Returns batches approved."""
+    from nabla.persistence import file_lock
+    # lock order: approved then pending (drain_released takes pending-
+    # then-quarantine; no cycle anywhere)
+    with file_lock(str(_approved_file())), file_lock(str(_pending_file())):
+        pend = _load_pending()
+        batches = pend.pop(entity_id, [])
+        if batches:
+            apr = _load_approved()
+            apr.setdefault(entity_id, []).extend(batches)
+            _save_approved(apr)
+        _save_pending(pend)
+        return len(batches)
+
+
+def _approved_file() -> "Path":
+    from pathlib import Path
+    from nabla.config import get_settings
+    return Path(get_settings().data_dir) / "baseline_approved.json"
+
+
+def _load_approved() -> dict:
+    p = _approved_file()
+    if p.exists():
+        import json as _json
+        return _json.loads(p.read_text() or "{}")
+    return {}
+
+
+def _save_approved(apr: dict) -> None:
+    """N15 (round 4): UNLOCKED inner writer — callers hold file_lock."""
+    from nabla.persistence import atomic_write_json
+    p = str(_approved_file())
+    atomic_write_json(p, apr)
+
+
+def drain_approved_pending(store: "EntityProfileStore") -> int:
+    """Pipeline START: apply every approved entity's held batches through
+    the normal update_user, inside the caller's load-save window (N3 +
+    STRONG 2: ALL approved entities drain — an entity that goes quiet
+    after its FP disposition must not silently lose its verdict)."""
+    from nabla.persistence import file_lock
+    with file_lock(str(_approved_file())):
+        apr = _load_approved()
+        if not apr:
+            return 0
+        total = 0
+        for entity_id, batches in apr.items():
+            for entries in batches:
+                store.update_user(entity_id, entries)
+                total += 1
+        _save_approved({})
+        return total
+
+
+def drain_released_pending(store: "EntityProfileStore") -> int:
+    """TTL-release drain (final-review REQUIRED 1): a no-disposition TTL
+    expiry means 'review window elapsed, treat as normal' — held batches
+    APPLY (the self-healing choice; the accepted cost is that the 7-day
+    TTL is the maximum attack-absorption lag for undispositioned
+    hold-list findings). Entities whose hold has expired route here."""
+    from nabla.persistence import file_lock
+    # lock order: pending then quarantine (alphabetical file names —
+    # approve_pending takes approved-then-pending; no cycle)
+    with file_lock(str(_pending_file())), file_lock(str(_quarantine_file())):
+        q = _load_quarantine()
+        pend = _load_pending()
+        total = 0
+        for entity_id, ent in list(q.items()):
+            if not ent.get("held"):
+                continue
+            if ent.get("tp_hold_days"):
+                continue  # TP holds discard, never apply
+            if _is_quarantined(entity_id):
+                continue  # still inside the TTL window
+            batches = pend.pop(entity_id, [])
+            for entries in batches:
+                store.update_user(entity_id, entries)
+                total += 1
+            ent["held"] = False
+            ent["released_at"] = _data_clock_now().isoformat()
+            ent["released_by"] = "ttl_apply"
+        _save_pending(pend)
+        _save_quarantine(q)
+        return total
 
 
 def apply_pending(entity_id: str, store: "EntityProfileStore") -> int:
@@ -1121,9 +1390,11 @@ def apply_pending(entity_id: str, store: "EntityProfileStore") -> int:
     observation_rate path update_user uses (single merged application;
     no double-count — each held batch applies exactly once).
     """
-    pend = _load_pending()
-    batches = pend.pop(entity_id, [])
-    _save_pending(pend)
+    from nabla.persistence import file_lock
+    with file_lock(str(_pending_file())):
+        pend = _load_pending()
+        batches = pend.pop(entity_id, [])
+        _save_pending(pend)
     for entries in batches:
         if entity_id in store.users:
             store.update_user(entity_id, entries)
@@ -1134,26 +1405,31 @@ def apply_pending(entity_id: str, store: "EntityProfileStore") -> int:
 
 def discard_pending(entity_id: str) -> int:
     """TP disposition: confirmed attack — the held data never enters."""
-    pend = _load_pending()
-    n = len(pend.pop(entity_id, []))
-    _save_pending(pend)
-    return n
+    from nabla.persistence import file_lock
+    with file_lock(str(_pending_file())):
+        pend = _load_pending()
+        n = len(pend.pop(entity_id, []))
+        _save_pending(pend)
+        return n
 
 
 def apply_disposition_to_quarantine(entity_id: str, disposition: str,
                                      profile_store: "EntityProfileStore | None" = None) -> None:
     """The four-row truth table (plan stage 2, review REQUIRED 1), with the
-    R6 pending-store semantics: FP/BTP release AND apply held batches (the
-    data was normal); TP holds AND discards pending (attack never enters);
-    no-disposition rides the TTL (and the pending cap bounds the loss)."""
+    N3 (round 4) semantics: FP/BTP release the hold AND approve the held
+    batches — the NEXT pipeline run applies them inside its own load-save
+    window (the API path never writes profiles; it raced the pipeline and
+    lost, which is how held data died). TP holds (time-boxed, 14 days) AND
+    discards pending (attack never enters); no-disposition rides the TTL,
+    which APPLIES on expiry (the self-healing choice).
+    profile_store is accepted for signature compatibility and ignored."""
     if disposition in ("false_positive", "benign_true_positive"):
         release_quarantine(entity_id)
-        if profile_store is not None:
-            apply_pending(entity_id, profile_store)
+        approve_pending(entity_id)
     elif disposition == "true_positive":
         hold_quarantine(entity_id)
         discard_pending(entity_id)
-    # no-disposition row handled by the TTL in _is_quarantined
+    # no-disposition row: the TTL in _is_quarantined + drain_released_pending
 
 
 def _data_clock_now() -> "datetime":
@@ -1178,17 +1454,16 @@ def _data_clock_now() -> "datetime":
 
 
 def _is_quarantined(entity_id: str) -> bool:
-    from datetime import timedelta
+    from nabla.utils import parse_iso_timestamp
     q = _load_quarantine()
     ent = q.get(entity_id)
     if not ent or not ent.get("held"):
         return False
-    if ent.get("indefinite"):
-        return True
-    # TTL row: data clock, default 7 days
-    from nabla.utils import parse_iso_timestamp
+    # N5: `indefinite` is retired — legacy records carrying it read as the
+    # TP hold (time-boxed from their original since stamp).
     since = parse_iso_timestamp(ent.get("since", ""))
     if since is None:
         return False
+    ttl = _TP_HOLD_DAYS if ent.get("tp_hold_days") else _QUARANTINE_TTL_DAYS
     age_days = (_data_clock_now() - since).total_seconds() / 86400.0
-    return age_days < _QUARANTINE_TTL_DAYS
+    return age_days < ttl

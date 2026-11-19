@@ -64,7 +64,7 @@ class TestBootstrap:
     ):
         """Bootstrap should call get_or_create_shared_blocks."""
         mock_settings.return_value = MagicMock(
-            llm_model="ollama/gemma4:latest",
+            llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
             effective_tool_url="http://letta:8283",
             embedding_endpoint="http://host.docker.internal:11434/v1",
@@ -96,7 +96,7 @@ class TestBootstrap:
     ):
         """Bootstrap should create a supervisor agent."""
         mock_settings.return_value = MagicMock(
-            llm_model="ollama/gemma4:latest",
+            llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
             effective_tool_url="http://letta:8283",
             embedding_endpoint="http://host.docker.internal:11434/v1",
@@ -130,7 +130,7 @@ class TestBootstrap:
     ):
         """Bootstrap should set compaction model for the supervisor agent."""
         mock_settings.return_value = MagicMock(
-            llm_model="ollama/gemma4:latest",
+            llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
             effective_tool_url="http://letta:8283",
             embedding_endpoint="http://host.docker.internal:11434/v1",
@@ -163,7 +163,7 @@ class TestBootstrap:
     ):
         """Bootstrap should fix embedding model prefix for the supervisor agent."""
         mock_settings.return_value = MagicMock(
-            llm_model="ollama/gemma4:latest",
+            llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
             effective_tool_url="http://letta:8283",
             embedding_endpoint="http://host.docker.internal:11434/v1",
@@ -195,7 +195,7 @@ class TestBootstrap:
     ):
         """Bootstrap should continue if attack_mapping download fails."""
         mock_settings.return_value = MagicMock(
-            llm_model="ollama/gemma4:latest",
+            llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
             effective_tool_url="http://letta:8283",
             embedding_endpoint="http://host.docker.internal:11434/v1",
@@ -229,7 +229,7 @@ class TestBootstrap:
     ):
         """Bootstrap should continue if lolbin_db download fails."""
         mock_settings.return_value = MagicMock(
-            llm_model="ollama/gemma4:latest",
+            llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
             effective_tool_url="http://letta:8283",
             embedding_endpoint="http://host.docker.internal:11434/v1",
@@ -263,7 +263,7 @@ class TestBootstrap:
     ):
         """Supervisor agent should receive all 9 shared blocks."""
         mock_settings.return_value = MagicMock(
-            llm_model="ollama/gemma4:latest",
+            llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
             effective_tool_url="http://letta:8283",
             embedding_endpoint="http://host.docker.internal:11434/v1",

@@ -528,17 +528,15 @@ class TestLolbinChecksumPinning:
                     assert "integrity verification disabled" in str(call_args).lower()
 
     def test_env_var_overrides_checksum(self):
-        """NABLA_LOLBAS_SHA256 env var should override the default."""
-        # This test verifies the env var mechanism works
+        """Checksum pins come from Settings (N14 round 4: was raw env)."""
         import nabla.lolbin_db as lolbin_mod
-        original = lolbin_mod.LOLBAS_SHA256
-        try:
-            with patch.dict(os.environ, {"NABLA_LOLBAS_SHA256": "test_hash_123"}):
-                # Re-import to pick up env var
-                import importlib
-                importlib.reload(lolbin_mod)
-                assert lolbin_mod.LOLBAS_SHA256 == "test_hash_123"
-        finally:
-            # Restore
-            lolbin_mod.LOLBAS_SHA256 = original
-            importlib.reload(lolbin_mod)
+        import nabla.config
+        from nabla.config import Settings
+
+        with patch.object(nabla.config, "get_settings",
+                          lambda: Settings(lolbas_sha256="test_hash_123")):
+            assert lolbin_mod._pinned_hash("lolbas_sha256") == "test_hash_123"
+        # unset pin reads as empty (check skipped, warning logged)
+        with patch.object(nabla.config, "get_settings",
+                          lambda: Settings(lolbas_sha256="")):
+            assert lolbin_mod._pinned_hash("lolbas_sha256") == ""

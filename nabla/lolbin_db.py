@@ -26,20 +26,14 @@ GTFOBINS_API_URL = "https://gtfobins.org/api.json"
 _LOLBAS_HOSTS = ("lolbas-project.github.io", "pages.github.com")
 _GTFOBINS_HOSTS = ("gtfobins.org", "pages.github.com")
 
-# Expected SHA-256 checksums (empty string skips check — set to verify integrity).
-# Set via NABLA_LOLBAS_SHA256 / NABLA_GTFOBINS_SHA256 env vars, or pin the
-# hashes here after downloading. When empty, a warning is logged and the
-# download proceeds without integrity verification.
-LOLBAS_SHA256 = ""
-GTFOBINS_SHA256 = ""
-
-# Allow env var overrides for checksum pinning
-_ENV_LOLBAS_SHA256 = os.environ.get("NABLA_LOLBAS_SHA256", "")
-_ENV_GTFOBINS_SHA256 = os.environ.get("NABLA_GTFOBINS_SHA256", "")
-if _ENV_LOLBAS_SHA256:
-    LOLBAS_SHA256 = _ENV_LOLBAS_SHA256
-if _ENV_GTFOBINS_SHA256:
-    GTFOBINS_SHA256 = _ENV_GTFOBINS_SHA256
+# Expected SHA-256 checksums (empty string skips check — set to verify
+# integrity). N14 (round 4): via Settings (lolbas_sha256 / gtfobins_sha256)
+# — the raw env reads were unreachable in Docker and invisible to the
+# plumbing guard. Read at DOWNLOAD time, not import time: a bad Settings
+# value must not crash every importer of this module.
+def _pinned_hash(setting_name: str) -> str:
+    from nabla.config import get_settings
+    return getattr(get_settings(), setting_name) or ""
 
 # Cache filenames
 LOLBAS_CACHE = "lolbas.json"
@@ -129,7 +123,7 @@ def fetch_lolbin_data(data_dir: str, refresh_days: int = 30) -> dict:
             LOLBAS_API_URL,
             os.path.join(data_dir, LOLBAS_CACHE),
             refresh_days,
-            expected_sha256=LOLBAS_SHA256,
+            expected_sha256=_pinned_hash("lolbas_sha256"),
             allowed_hosts=_LOLBAS_HOSTS,
         )
         with open(lolbas_path) as f:
@@ -144,7 +138,7 @@ def fetch_lolbin_data(data_dir: str, refresh_days: int = 30) -> dict:
             GTFOBINS_API_URL,
             os.path.join(data_dir, GTFOBINS_CACHE),
             refresh_days,
-            expected_sha256=GTFOBINS_SHA256,
+            expected_sha256=_pinned_hash("gtfobins_sha256"),
             allowed_hosts=_GTFOBINS_HOSTS,
         )
         with open(gtfobins_path) as f:

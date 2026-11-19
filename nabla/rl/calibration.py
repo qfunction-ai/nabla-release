@@ -66,7 +66,16 @@ THRESHOLDS = {  # noqa: E241
 # Detection method -> tunable threshold (R7, round 3: keys regenerated from
 # the EMITTED detection_method strings — grep-verified against detection.py's
 # actual threshold reads; the adversarial audit found the phase-3 map carried
-# 11 dead keys and missed 10 emitted methods)
+# 11 dead keys and missed 10 emitted methods).
+#
+# N10 (round 4): the map now holds ONLY methods whose alerts carry a
+# raw_score in the knob's own units — a label for such a method can order
+# threshold moves. Methods gated by sensitivity TIERS (a 0.3-1.0 knob that
+# just picks a pattern-count or window tier) or window knobs have no score
+# in knob units: their labels were collected and silently unused while the
+# threshold reported 'pinned — 0/30 labels', implying labels could arrive.
+# They can't. Those methods moved to NOT_CALIBRATABLE_METHODS and their
+# thresholds report not_calibratable.
 METHOD_TO_THRESHOLD = {
     "z_score": "z_score_sigma",                      # thresholds["z_score_sigma"]
     "entity_z_score": "entity_event_count_sigma",    # entity_event_count_sigma
@@ -77,24 +86,34 @@ METHOD_TO_THRESHOLD = {
     "multi_ip": "multi_ip_count",                    # thresholds["multi_ip_count"]
     "activity_spike": "spike_multiplier",            # thresholds["spike_multiplier"]
     "entity_activity_spike": "spike_multiplier",     # same knob, entity path
-    "lolbin": "lolbin_sensitivity",                  # lolbin_sensitivity
-    "parent_child": "parent_child_sensitivity",
-    "critical_host_escalation": "critical_host_sensitivity",
-    "unusual_process": "unusual_process_sensitivity",
-    "entity_unusual_process": "unusual_process_sensitivity",
-    "enumeration_behavior": "enumeration_sensitivity",
-    "suspicious_path": "suspicious_path_sensitivity",
-    "integrity_anomaly": "integrity_anomaly_sensitivity",
-    "registry_abuse": "registry_abuse_sensitivity",
-    "network_anomaly": "network_anomaly_sensitivity",
-    "ewma": "ewma_sensitivity",
-    "cusum": "cusum_sensitivity",
-    "action_sequence": "action_sequence_window_minutes",
     "entity_new_ip": "entity_new_ip_threshold",
     "entity_new_process": "entity_new_process_threshold",
     "entity_behavior_composite": "entity_behavior_composite_threshold",
     "entity_host_composite": "entity_behavior_composite_threshold",
 }
+
+# Emitted methods whose thresholds are structurally not calibratable from
+# labels (N10). Parallel to STATIC_DETECTORS: classification coverage tests
+# accept either set.
+NOT_CALIBRATABLE_METHODS = {
+    "lolbin",                    # lolbin_sensitivity: tier gate on pattern count
+    "parent_child",              # parent_child_sensitivity: tier gate
+    "critical_host_escalation",  # critical_host_sensitivity: tier gate
+    "unusual_process",           # unusual_process_sensitivity: tier gate
+    "entity_unusual_process",    # same knob, entity path
+    "enumeration_behavior",      # enumeration_sensitivity: tier gate on spawn count
+    "suspicious_path",           # suspicious_path_sensitivity: tier gate on pattern count
+    "integrity_anomaly",         # integrity_anomaly_sensitivity: tier gate
+    "registry_abuse",           # registry_abuse_sensitivity: tier gate
+    "network_anomaly",           # network_anomaly_sensitivity: tier gate
+    "ewma",                      # ewma_sensitivity: tier gate (picks lambda/sigma)
+    "cusum",                     # cusum_sensitivity: tier gate (picks k/h)
+    "action_sequence",           # action_sequence_window_minutes: window knob
+}
+
+# Thresholds no calibratable method feeds (derived — a new threshold is
+# not_calibratable until a method with a comparable raw_score earns it).
+NOT_CALIBRATABLE = set(THRESHOLDS) - set(METHOD_TO_THRESHOLD.values())
 
 STATIC_DETECTORS = {
     "pre_flagged", "attack_script", "renamed_tool",
@@ -247,6 +266,12 @@ def run_calibration() -> dict:
         entry = store.get(tname, {"current": meta[3], "default": meta[3], "pinned": False})
         if entry.get("pinned"):
             report[tname] = {"status": "pinned_by_operator", "current": entry["current"]}
+            continue
+        if tname in NOT_CALIBRATABLE:
+            # N10: no method feeds this threshold a comparable raw_score —
+            # tier gates, window knobs, and unmapped cutoffs can never
+            # calibrate from labels. 'pinned — 0/30 labels' lied.
+            report[tname] = {"status": "not_calibratable", "current": entry["current"]}
             continue
         tlabels = by_threshold.get(tname, [])
         if not tlabels:

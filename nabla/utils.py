@@ -169,10 +169,11 @@ def is_machine_account(name: str, extra: set[str] | None = None) -> bool:
 
 
 def machine_account_overrides() -> set[str]:
-    """Environment-specific machine accounts from NABLA_MACHINE_ACCOUNTS."""
-    import os
+    """Environment-specific machine accounts via Settings (N9: the raw
+    env read was unreachable in Docker — compose doesn't forward it)."""
+    from nabla.config import get_settings
 
-    raw = os.environ.get("NABLA_MACHINE_ACCOUNTS", "")
+    raw = get_settings().machine_accounts or ""
     return {part.strip() for part in raw.split(",") if part.strip()}
 
 
@@ -182,9 +183,9 @@ def human_account_overrides() -> set[str]:
     The escape hatch for a false positive: an operator who knows `ftp` is a
     person at their site should not have to patch the code.
     """
-    import os
+    from nabla.config import get_settings
 
-    raw = os.environ.get("NABLA_HUMAN_ACCOUNTS", "")
+    raw = get_settings().human_accounts or ""
     return {part.strip().lower() for part in raw.split(",") if part.strip()}
 
 

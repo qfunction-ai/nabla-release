@@ -134,6 +134,13 @@ class EntityRiskScore:
     peak: float = 0.0
     trend: float = 0.0
     last_updated: str = ""
+    # N2.2 (round 4): the entity's OWN reference clock — the newest stamp
+    # it was scored against. Each entity's decay reference is the max of
+    # this and its own batch anomalies' stamps; a batch for ANOTHER entity
+    # cannot age it. Dormant entities keep their score until their own
+    # stream advances (documented, intended: the score reflects the last
+    # known activity).
+    data_clock: str = ""
     score_history: list[tuple[str, float]] = field(default_factory=list)
     contributing_anomalies: list[dict] = field(default_factory=list)
 
@@ -147,6 +154,7 @@ class EntityRiskScore:
             "peak": round(self.peak, 2),
             "trend": round(self.trend, 3),
             "last_updated": self.last_updated,
+            "data_clock": self.data_clock,
             "score_history": self.score_history[-24:],  # Keep last 24 entries
             "contributing_anomalies": self.contributing_anomalies[-20:],
         }
@@ -164,6 +172,7 @@ class EntityRiskScore:
             peak=data.get("peak", 0.0),
             trend=data.get("trend", 0.0),
             last_updated=data.get("last_updated", ""),
+            data_clock=data.get("data_clock", ""),
             score_history=[tuple(pair) for pair in data.get("score_history", [])],
             contributing_anomalies=data.get("contributing_anomalies", []),
         )
@@ -480,6 +489,9 @@ def compute_risk_scores(
     settings = get_settings()
 
     store = EntityRiskStore(settings.entity_risk_scores_file)
+    # N2.3: count of anomalies skipped for missing timestamps — surfaced to
+    # the caller (pipeline degradations) so the loss is visible, not silent.
+    degraded_missing_ts = 0
     if temporal_chains is None:
         temporal_chains = []
 
@@ -521,7 +533,38 @@ def compute_risk_scores(
 
     for entity_id, entity_anoms in entity_anomalies.items():
         etype = entity_type_map.get(entity_id, "user")
+        # N-harness (round 4, found live): machine principals are excluded
+        # from BEHAVIORAL baselining (F5) but nothing excluded them from risk
+        # accumulation — svc-jenkins/root/-/adm rack up z/spike anomalies on
+        # every batch (their volume IS their job) and outrank the attack
+        # user. A machine account has no behavior to deviate from, so it
+        # accumulates no behavioral risk. Same predicate as detection's
+        # exclusion — one definition of "machine", not two.
+        if etype == "user":
+            from nabla.utils import is_baselineable_user
+            if not is_baselineable_user(entity_id):
+                continue
         score = store.get_or_create(entity_id, etype)
+
+        # N2.2 (round 4): the PER-ENTITY reference clock. R12's batch-max
+        # rule is one clock for everyone: a batch on recent data ages every
+        # entity from an older dataset (reviewer scenario (c): replay for
+        # alice, then a run for bob, zeroes alice). This entity's reference
+        # is the max of ITS OWN persisted data_clock and ITS OWN anomalies'
+        # stamps this batch. COLD START floors at the global data clock
+        # (R12's synthetic-then-replay guard: a fresh entity scored on old
+        # stamps must still age honestly to the dataset's newest, not read
+        # "age 0" against its own batch). Dormant entities keep their score
+        # until their own stream advances.
+        ent_ref = _pit(str(score.data_clock or "")) if score.data_clock else None
+        for a in entity_anoms:
+            dt = _pit(str(a.get("timestamp", "") or ""))
+            if dt is not None and (ent_ref is None or dt > ent_ref):
+                ent_ref = dt
+        if ent_ref is None or ent_ref < ref_clock:
+            ent_ref = max(ent_ref, ref_clock) if ent_ref else ref_clock
+        ent_now = ent_ref.isoformat()
+        score.data_clock = ent_now
 
         # Track previous overall for trend calculation
         prev_overall = score.overall
@@ -557,7 +600,18 @@ def compute_risk_scores(
 
             # --- Time decay ---
             anomaly_time = anomaly.get("timestamp", anomaly.get("detected_at", ""))
-            decay = _decay_factor(anomaly_time, half_life_hours, ref=ref_clock) if anomaly_time else 1.0
+            # N2.3 (round 4, final-review REQUIRED 2): absent means absent.
+            # The old guard (`... if anomaly_time else 1.0`) made empty-ts
+            # anomalies decay-IMMORTAL — full weight forever, never pruned
+            # (prune compares the never-shrinking decayed value), and
+            # resurrected at full weight by recompute-from-retained. An
+            # anomaly with no timestamp carries no defensible time
+            # information: it contributes nothing this run and is not
+            # retained. The run's degradation count records the loss.
+            if not anomaly_time:
+                degraded_missing_ts += 1
+                continue
+            decay = _decay_factor(anomaly_time, half_life_hours, ref=ent_ref)  # N2.2: per-entity
 
             # --- Chain multiplier ---
             chain_mult = _chain_multiplier(anomaly, temporal_chains)
@@ -617,8 +671,14 @@ def compute_risk_scores(
         # and decayed it again each run (compounding; ~2h memory).
         for a in retained.values():
             ts = a.get("timestamp", "")
+            # N2.3: legacy zombies — empty-ts entries already in a store
+            # (written by the immortal-guard era, or by N2.1's
+            # absent-means-absent exfil stamps before anyone disposed of
+            # them) are dropped here, not resurrected.
+            if not ts:
+                continue
             base = a.get("base_contribution", a.get("contribution", 0.0))
-            decay = _decay_factor(ts, half_life_hours, ref=ref_clock) if ts else 1.0
+            decay = _decay_factor(ts, half_life_hours, ref=ent_ref)  # N2.2: per-entity
             contribution = base * decay
             # Prune negligible (decayed below 1% of its original weight)
             if contribution < 0.05:
@@ -637,7 +697,7 @@ def compute_risk_scores(
 
         # Compute trend: (current - previous) / hours_since_last_update
         if score.last_updated:
-            hours = _hours_since_ref(score.last_updated, ref_clock)
+            hours = _hours_since_ref(score.last_updated, ent_ref)  # N2.2: per-entity
             if hours > 0:
                 trend = (overall - prev_overall) / hours
             else:
@@ -650,7 +710,7 @@ def compute_risk_scores(
         score.categories = new_categories
         score.peak = max(score.peak, overall)
         score.trend = trend
-        score.last_updated = now
+        score.last_updated = ent_now  # N2.2: the entity's own clock
         score.contributing_anomalies = survivors[-max_anomalies:]
         score.score_history.append((now, overall))
         # Keep last 24 history entries
@@ -663,7 +723,14 @@ def compute_risk_scores(
         if entity_id not in entity_anomalies and score.overall > 0:
             # Apply decay since last update
             if score.last_updated:
-                hours = _hours_since_ref(score.last_updated, ref_clock)
+                # N2.2: the INACTIVE entity decays against ITS OWN persisted
+                # clock and does NOT advance it — no activity means no
+                # advancement (a dormant score reflects last known activity;
+                # bob's newer batch cannot age alice). The clock advances
+                # only when the entity's own stream does.
+                own = _pit(str(score.data_clock or "")) if score.data_clock else None
+                own_ref = own if own is not None else ref_clock
+                hours = _hours_since_ref(score.last_updated, own_ref)  # N2.2: per-entity
                 decay = 0.5 ** (hours / half_life_hours)
                 score.overall = min(score.overall * decay, _MAX_SCORE)
                 for cat in score.categories:
@@ -671,15 +738,30 @@ def compute_risk_scores(
                 # R2: refresh the retained survivors' displayed contributions
                 # from base against the current reference (inactive entities
                 # keep accurate per-anomaly decay, not just the overall score)
+                # N2.3: empty-ts entries are zombies — dropped, not refreshed
+                # (the `else 1.0` guard kept them at full weight forever).
+                survivors_active: list[dict] = []
                 for a in score.contributing_anomalies:
-                    base_a = a.get("base_contribution", a.get("contribution", 0.0))
                     ts_a = a.get("timestamp", "")
-                    d_a = _decay_factor(ts_a, half_life_hours, ref=ref_clock) if ts_a else 1.0
+                    if not ts_a:
+                        continue
+                    base_a = a.get("base_contribution", a.get("contribution", 0.0))
+                    d_a = _decay_factor(ts_a, half_life_hours, ref=own_ref)  # N2.2: per-entity
                     a["contribution"] = round(base_a * d_a, 3)
-                score.last_updated = now
+                    survivors_active.append(a)
+                score.contributing_anomalies = survivors_active
                 score.trend = -score.overall * (1 - decay) / max(hours, 0.1)
 
     store.save()
+    if degraded_missing_ts:
+        logger.warning(
+            "Risk scoring skipped %d anomalies with missing timestamps "
+            "(counted as a degradation — absent means absent, never 'now')",
+            degraded_missing_ts,
+        )
+        store.missing_timestamp_anomalies = degraded_missing_ts
+    else:
+        store.missing_timestamp_anomalies = 0
     logger.info(
         "Risk scores updated: %d entities scored, %d above cutoff",
         len(entity_anomalies),

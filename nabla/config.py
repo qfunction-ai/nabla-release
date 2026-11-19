@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     web_port: int = 8000
 
     # ── Model configuration ───────────────────────────────────
-    llm_model: str = "ollama/gemma4:latest"
+    llm_model: str = "ollama/gemma4:26b"
     embedding_model: str = "embeddinggemma:latest"
     # Embedding endpoint — must be reachable from INSIDE the Letta container
     # Use host.docker.internal when Letta runs in Docker
@@ -161,12 +161,21 @@ class Settings(BaseSettings):
     # ── Peer groups ─────────────────────────────────────────────
     peer_group_recompute_interval: int = 10  # Minimum pipeline runs between re-clustering
 
+    # ── Account classification (N9: reachable in Docker, was raw env) ──
+    machine_accounts: str = ""  # comma-separated extra machine accounts (excluded from baselining)
+    human_accounts: str = ""  # comma-separated accounts forced back into baselining (override wins)
+    operator: str = ""  # audit-trail identity for operator-triggered runs
+
     # ── Exfiltration detection ──────────────────────────────────
     sanctioned_services: str = ""  # R14: comma-separated domain suffixes (tenant-level preferred)
     timezone: str = "UTC"  # R17: site timezone for hour-based detectors (IANA name)
     exfil_volume_sigma: float = 3.0  # Z-score threshold for volume anomaly
     exfil_dns_entropy_threshold: float = 3.5  # Shannon entropy threshold for DNS tunneling
     exfil_staging_window_minutes: int = 30  # Window for staging pattern detection
+
+    # ── LOLBIN database integrity pins (N14: was raw env) ──────
+    lolbas_sha256: str = ""  # expected SHA256 of the LOLBAS download (empty = warn + verify-skip)
+    gtfobins_sha256: str = ""  # expected SHA256 of the GTFOBins download
 
     # ── Splunk connector ───────────────────────────────────────
     splunk_host: str = ""  # e.g. https://splunk.example.com:8089

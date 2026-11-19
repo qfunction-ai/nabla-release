@@ -364,7 +364,16 @@ class TestAttackDetection:
         # population's 95th percentile by a clear margin (separation, not
         # absolute cutoff — one attack hour accumulates below the 50 cutoff;
         # the cutoff assertion returns with multi-hour accumulation tests)
-        stores = [r["risk_store"] for r in results if r["risk_store"] and r["risk_store"].scores]
+        # N1/N2 (round 4): score separation from the first POST-WARM-UP
+        # store — warm-up runs (first 6 hours, same convention as the
+        # ceiling test) fire entity_off_hours on every user while
+        # typical_hours populates; that is baseline-building noise, not
+        # the steady-state separation this test measures.
+        stores = [
+            r["risk_store"] for r in results
+            if r["risk_store"] and r["risk_store"].scores
+            and r["hour"] >= SIM_START + timedelta(hours=6)
+        ]
         assert stores, "no risk scores ever computed"
         final = stores[-1]
         assert "avery" in final.scores, "attack user missing from risk scores"

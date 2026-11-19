@@ -42,9 +42,15 @@ class TestEWMAProfile:
         assert 150.0 < ewma.value < 200.0
 
     def test_z_score_zero_variance(self):
-        """Z-score returns 0 when variance is zero."""
+        """N10 (round 4): zero variance no longer short-circuits z to 0 —
+        that guard bypassed the R4 Poisson floor and made a perfectly
+        regular user (variance exactly 0) invisible to ANY burst. The
+        floor supplies std = sqrt(value) for count EWMAs; z is honest."""
         ewma = EWMAProfile(value=50.0, variance=0.0)
-        assert ewma.z_score(100.0) == 0.0
+        # floored std = sqrt(50); a 2x burst is a real signal, not z=0
+        assert ewma.z_score(100.0) == (100.0 - 50.0) / (50.0 ** 0.5)
+        # and the at-mean observation is still z=0
+        assert ewma.z_score(50.0) == 0.0
 
     def test_z_score_calculation(self):
         """Z-score computes correctly for known values."""
@@ -299,17 +305,22 @@ class TestEntityProfileStore:
         assert profile.auth_failure_ratio.value > 0  # 1/3 = 33%
 
     def test_update_user_ewma_converges_across_runs(self, tmp_path):
-        """EWMA converges to stable value after multiple runs."""
+        """EWMA converges to stable value after multiple runs.
+
+        N4 (round 4): observations are COMPLETE hours — the runs advance an
+        hour each so each closes as one observation of 100 (the old
+        same-instant batches accumulated into one never-closed open hour,
+        which is the accumulator working as designed)."""
         path = str(tmp_path / "profiles.json")
         store = EntityProfileStore(path)
-        # 10 runs with 100 events each
-        for _ in range(10):
-            entries = [{"user": "jsmith", "action": "login", "timestamp": "2025-01-15T09:00:00Z"}] * 100
+        # 10 runs, one hour apart, 100 events each
+        for h in range(10):
+            entries = [{"user": "jsmith", "action": "login",
+                        "timestamp": f"2025-01-15T{9 + h:02d}:00:00Z"}] * 100
             store.update_user("jsmith", entries)
         profile = store.get_user("jsmith")
         assert profile.observation_count == 10
-        # A8: single-instant batch -> 1h window convention -> rate = 100/hr;
-        # A9: bias-corrected EWMA converges to the observation exactly
+        # A8/A9 preserved: each closed hour observed 100 -> EWMA == 100
         assert abs(profile.typical_event_count.value - 100.0) < 1.0
 
     def test_update_user_accumulates_across_runs(self, tmp_path):

@@ -37,12 +37,11 @@ logger = get_logger("exfiltration")
 def _sanctioned_services() -> set[str]:
     """Sanctioned cloud services (R14 round 3): via Settings (env-plumbed),
     not a raw os.environ read the container can't receive."""
-    try:
-        from nabla.config import get_settings
-        raw = get_settings().sanctioned_services or ""
-    except Exception:
-        import os
-        raw = os.environ.get("NABLA_SANCTIONED_SERVICES", "")
+    # N14 (round 4): the except-Exception env fallback was exactly the
+    # pattern the raw-read guard exists to kill — Settings is the one
+    # sanctioned env reader.
+    from nabla.config import get_settings
+    raw = get_settings().sanctioned_services or ""
     return {s.strip().lower() for s in raw.split(",") if s.strip()}
 
 
@@ -202,7 +201,13 @@ def _detect_volume_anomaly(
             continue
         # Score only. The baseline is learned in absorption (update_user),
         # which runs after detection — so this is still score-then-learn.
-        z = ewma.z_score(observation_rate(user_net))
+        # N4 (round 4): current-hour read against the complete-hour network
+        # EWMA (the net accumulator lives on the same profile).
+        from nabla.baselines import current_hour_rate
+        _nr = current_hour_rate(user_net, profile)
+        if _nr is None:
+            continue  # absent stamps: absent means absent (N2.3)
+        z = ewma.z_score(_nr)
         if z > sigma:
             anomalies.append({
                 "entity": user,
@@ -216,7 +221,12 @@ def _detect_volume_anomaly(
                     f"(z-score {z:.1f} vs baseline {ewma.value:.0f})"
                 ),
                 "mitre_attack": [_MITRE_T1048],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                # N2.1 (round 4): event time, not wall time — a wall stamp
+                # pushed the risk reference clock to today and decayed every
+                # replayed anomaly in the batch to months-old. Absent means
+                # absent (empty string), never "now".
+                "timestamp": max((e.get("timestamp", "") for e in user_net),
+                                 default=""),
             })
 
     return anomalies
@@ -324,7 +334,8 @@ def _detect_destination_anomaly(
                         f"({', '.join(flags)})"
                     ),
                     "mitre_attack": [_MITRE_T1567] if any("cloud" in f for f in flags) else [_MITRE_T1048],
-                    "timestamp": entry.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                    # N2.1: event time; absent means absent (see exfil_volume)
+                    "timestamp": entry.get("timestamp", ""),
                 })
 
     return anomalies
@@ -394,7 +405,11 @@ def _detect_dns_tunneling(
                     f"tunneling indicators: {suspicious_queries[:3]}"
                 ),
                 "mitre_attack": [_MITRE_T1071],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                # N2.1: event time of the newest triggering DNS entry
+                "timestamp": max((e.get("timestamp", "") for e in dns_entries
+                                  if e.get("query") in suspicious_queries),
+                                 default="") or max(
+                    (e.get("timestamp", "") for e in dns_entries), default=""),
             })
 
         # Flag excessive TXT queries (potential C2 channel)
@@ -411,7 +426,10 @@ def _detect_dns_tunneling(
                     f"(potential DNS tunneling C2 channel)"
                 ),
                 "mitre_attack": [_MITRE_T1041],
-                "timestamp": datetime.now(timezone.utc).isoformat(),
+                # N2.1: event time of the newest TXT query
+                "timestamp": max((e.get("timestamp", "") for e in dns_entries
+                                  if str(e.get("query_type", "")).upper() == "TXT"),
+                                 default=""),
             })
 
     return anomalies
@@ -522,7 +540,10 @@ def _detect_staging_pattern(
                         f"network transfer within {window_minutes} minutes"
                     ),
                     "mitre_attack": [_MITRE_T1048, _MITRE_T1567],
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    # N2.1: event time — the transfer that completed the
+                    # staging chain is the anomaly's moment
+                    "timestamp": max((t.get("timestamp", "") for t in network_transfers),
+                                     default=""),
                 })
             elif network_after_create:
                 # A21: create->transfer alone is ordinary work (every office
@@ -544,7 +565,9 @@ def _detect_staging_pattern(
                             f"{window_minutes} minutes (no archival)"
                         ),
                         "mitre_attack": [_MITRE_T1048],
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        # N2.1: event time of the sizeable transfer
+                        "timestamp": max((t.get("timestamp", "") for t in network_transfers),
+                                         default=""),
                     })
 
     return anomalies

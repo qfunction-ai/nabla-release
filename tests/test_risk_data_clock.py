@@ -68,8 +68,21 @@ def test_replay_after_live_no_mixed_clock_artifacts(tmp_path, monkeypatch):
         entity_type_map={"alice": "user"}, half_life_hours=24.0)
     sc = store2.scores["alice"]
     assert abs(sc.trend) < 100.0, f"trend insane: {sc.trend}"
+    # N2.2 (round 4): the older replay CANNOT drag the entity's clock
+    # backwards — the persisted max wins, so last_updated stays at the
+    # live-scored yesterday (not the 8-day-old replay, and never wall-now).
     lu = datetime.fromisoformat(sc.last_updated.replace("Z", "+00:00"))
-    assert lu < datetime.now(timezone.utc) - timedelta(days=5), "last_updated wall-clocked"
+    assert timedelta(0) <= (datetime.now(timezone.utc) - lu) < timedelta(days=2), (
+        f"last_updated moved: {lu} — replay dragged the clock back or wall-clocked it")
+    # The 8-day-old replayed anomaly decays honestly against alice's own
+    # clock (yesterday) — ~0.03, pruned — and resurrects nothing: the score
+    # stands at its pre-replay live value. Neither inflation nor zero-age.
+    assert 3.5 <= sc.overall <= 4.5, (
+        f"replay moved the score ({sc.overall}) — older data must neither add "
+        f"risk nor resurrect; dormant-until-own-stream-advances is the N2.2 contract")
+    stamps = [a.get("timestamp", "") for a in sc.contributing_anomalies]
+    assert all(not s.startswith(str((datetime.now(timezone.utc) - timedelta(days=8)))[:10]) for s in stamps), (
+        f"the old replayed anomaly survived: {stamps}")
 
 
 def test_unparseable_timestamp_is_time_unknown(tmp_path, monkeypatch):
@@ -177,9 +190,15 @@ class TestR1R2Round3:
             risk.compute_risk_scores([other], {"alice": "user", "bob": "user"}, half_life_hours=24.0)
 
         # alice's seed anomaly: age = 2h; single decay => base * 0.5^(2/24)
+        # N2.2 (round 4): a dormant entity keeps its score until ITS OWN
+        # stream advances — bob's runs no longer age alice (that was the
+        # global clock N2.2 removed). Alice fires once more at t so her
+        # clock advances 2h past the seed; the seed then decays ONCE
+        # against her own newest.
         monkeypatch.setattr(risk, "_data_clock", lambda tt=t: tt)
         storeN = risk.compute_risk_scores(
-            [{**ANOMALY, "anomaly_id": "final", "entity": "carol", "timestamp": t.isoformat()}],
+            [{**ANOMALY, "anomaly_id": "final", "entity": "carol", "timestamp": t.isoformat()},
+             {**ANOMALY, "anomaly_id": "alice-late", "entity": "alice", "timestamp": t.isoformat()}],
             {"alice": "user", "bob": "user", "carol": "user"}, half_life_hours=24.0)
         alice = storeN.scores.get("alice")
         seed = [a for a in alice.contributing_anomalies if a.get("anomaly_id") == "seed-anom"]

@@ -110,9 +110,21 @@ def drive_pipeline(entries, tmp_path, monkeypatch, detection_phase="detection",
                 result.entity_profiles.update_ip(eid, gentries)
         result.entity_profiles.save()  # the orchestration step the harness skipped twice
 
-    # Risk: real scoring against the tmp store
+    # Risk: real scoring against the tmp store.
+    # N2 (round 4): the data clock tracks the SIMULATED event time — the
+    # newest ingested entry's stamp — exactly what the real pipeline's data
+    # clock does. The old wall-now mock made August-stamped anomalies decay
+    # to zero (~0.5^99 days), and the only reason attack separation held was
+    # a decay-immortal empty-ts anomaly — the harness was leaning on the N2.3
+    # bug. Absent stamps stay absent: the fallback is SIM time, never wall.
     from nabla import risk
-    monkeypatch.setattr(risk, "_data_clock", lambda: datetime.now(timezone.utc))
+    sim_now = max((e.get("timestamp", "") for e in entries), default="")
+    sim_dt = None
+    if sim_now:
+        from nabla.utils import parse_iso_timestamp
+        sim_dt = parse_iso_timestamp(sim_now)
+    _clock = sim_dt or datetime.now(timezone.utc)
+    monkeypatch.setattr(risk, "_data_clock", lambda: _clock)
     etm = {}
     if result.entity_profiles is not None:
         for eid in result.entity_profiles.users:

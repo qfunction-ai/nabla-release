@@ -450,6 +450,7 @@ def should_flag_chain(
     chain: TemporalChain,
     min_chain_length: int = 3,
     min_phase_coverage: float = 0.2,
+    stats: dict | None = None,
 ) -> bool:
     """Determine if a temporal chain should be flagged as an anomaly.
 
@@ -467,14 +468,23 @@ def should_flag_chain(
         True if the chain should be flagged.
     """
     # R11 (round 3): distinct EVENTS via event_ids (an anomaly carries the
-    # source events it derived from); anomaly_ids alone still dedup by
-    # method+timestamp hash, so three detectors on one event produce three
-    # 'distinct' anomalies. Method diversity required: multi-method is the
-    # campaign signal, single-method bursts are one detector's noise.
+    # source events it derived from). N7 (round 4): the fallback keys on
+    # (entity, timestamp) — the R11 fallback used anomaly_id, which is
+    # per-anomaly unique, so three detectors on one event STILL counted as
+    # three distinct events. Fallback uses are counted in stats so the
+    # fallback's death (all mapped detectors stamping event_ids) is
+    # witnessed in the run report, not assumed.
     events: set = set()
     methods: set = set()
     for e in chain.events:
-        events.update(e.get("event_ids") or [e.get("anomaly_id") or str(id(e))])
+        eids = e.get("event_ids")
+        if eids:
+            events.update(eids)
+        else:
+            if stats is not None:
+                stats["fallback_used"] = stats.get("fallback_used", 0) + 1
+            entity = e.get("user") or e.get("host") or e.get("source_ip") or ""
+            events.add((str(entity), str(e.get("timestamp") or "")))
         methods.add(e.get("detection_method", e.get("type", "")))
     if len(events) < min_chain_length or len(methods) < 2:
         return False
@@ -524,6 +534,7 @@ def detect_temporal_chains_with_context(
     _entries: list[dict[str, Any]],
     existing_anomalies: list[dict[str, Any]],
     thresholds: dict[str, float] | None = None,
+    stats: dict | None = None,
 ) -> tuple[list[dict[str, Any]], list["TemporalChain"]]:
     """Run temporal analysis and return chain objects for context formatting.
 
@@ -540,6 +551,9 @@ def detect_temporal_chains_with_context(
     """
     if thresholds is None:
         thresholds = {}
+    if stats is None:
+        stats = {}
+    stats.setdefault("fallback_used", 0)
 
     time_window = thresholds.get("temporal_chain_window_minutes", 30.0)
     min_chain_length = int(thresholds.get("temporal_min_chain_length", 3))
@@ -560,7 +574,8 @@ def detect_temporal_chains_with_context(
     anomalies = []
     for chain in chains:
         score_chain(chain)
-        if not should_flag_chain(chain, min_chain_length=min_chain_length, min_phase_coverage=min_phase_coverage):
+        if not should_flag_chain(chain, min_chain_length=min_chain_length,
+                                 min_phase_coverage=min_phase_coverage, stats=stats):
             continue
 
         # Build anomaly output

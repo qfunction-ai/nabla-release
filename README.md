@@ -14,10 +14,25 @@ containers, ~8 GB RAM.
 git clone https://github.com/qfunction-ai/nabla-release.git
 cd nabla-release
 cp .env.example .env          # set POSTGRES_PASSWORD; models default to Gemma
-ollama pull gemma4:latest && ollama pull embeddinggemma:latest   # on your Ollama host
+ollama pull gemma4:26b && ollama pull embeddinggemma:latest   # on your Ollama host
 docker compose up -d          # first boot pulls images (minutes)
 curl http://localhost:8002/health
 ```
+
+**Models.** The supervisor default is `gemma4:26b` (MoE, 25.2B total /
+3.8B active per token); embeddings use `embeddinggemma:latest`. The `26b`
+tag requires **Ollama 0.34.1+** (the pull is per-tensor sharded and the
+client picks a quantization per platform — the client-side model ID varies
+by OS/GPU, which is expected). Verify after pulling:
+
+```bash
+ollama show gemma4:26b    # architecture gemma4, parameters 26.2B
+```
+
+Ollama tags are mutable; if the lines above don't match, the tag was
+re-pushed. Hardware: 16 GB+ VRAM recommended. On 8-12 GB cards Ollama
+keeps the MoE expert weights in system RAM automatically (leave `num_gpu`
+unset) at reduced speed — 32 GB+ system RAM recommended in that case.
 
 On first boot, register the operator: open the UI at `http://localhost:3000`
 (the nginx frontend; `:8002` is the backend API) and create the first

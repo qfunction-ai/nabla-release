@@ -36,9 +36,12 @@ def test_every_mapped_threshold_is_read():
 
 
 def test_every_emitted_method_classified():
-    from nabla.rl.calibration import METHOD_TO_THRESHOLD, STATIC_DETECTORS
+    from nabla.rl.calibration import (
+        METHOD_TO_THRESHOLD, STATIC_DETECTORS, NOT_CALIBRATABLE_METHODS,
+    )
     emitted = _emitted_methods()
-    classified = set(METHOD_TO_THRESHOLD) | STATIC_DETECTORS
+    classified = (set(METHOD_TO_THRESHOLD) | STATIC_DETECTORS
+                  | NOT_CALIBRATABLE_METHODS)
     uncovered = emitted - classified
     assert not uncovered, f"emitted but unclassified methods: {sorted(uncovered)}"
 

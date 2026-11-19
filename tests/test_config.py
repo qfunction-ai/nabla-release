@@ -14,7 +14,7 @@ def test_settings_defaults():
         from nabla.config import Settings
         s = Settings()
         assert s.letta_base_url == "http://localhost:8284"
-        assert s.llm_model == "ollama/gemma4:latest"
+        assert s.llm_model == "ollama/gemma4:26b"
         assert s.embedding_model == "embeddinggemma:latest"
     finally:
         os.environ.update(env_backup)
