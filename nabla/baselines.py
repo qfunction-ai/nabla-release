@@ -383,6 +383,16 @@ class UserProfile(_ProfileMixin):
     typical_actions: dict[str, float] = field(default_factory=dict)
     auth_failure_ratio: EWMAProfile = field(default_factory=EWMAProfile)
     off_hours_ratio: EWMAProfile = field(default_factory=EWMAProfile)
+    # S4/S6 (round 5): closed-hours registry — absolute hours already
+    # observed as complete. Late events for a CLOSED hour MERGE into that
+    # hour's observation once (overlapping SIEM pulls must not
+    # double-observe; approved-drain batches held for days are
+    # definitionally late and must still land). Bounded at 48 hours.
+    closed_hours: list[str] = field(default_factory=list)
+    # S7 (round 5): the last absolute hour a rate alert fired for this
+    # user — one alert per entity per hour, even when 5-min batches
+    # re-score the cumulative hour.
+    last_rate_alert_hour: str = ""
 
     @classmethod
     def from_dict(cls, data: dict) -> UserProfile:
@@ -674,7 +684,8 @@ class EntityProfileStore:
 
     # --- Update methods ---
 
-    def update_user(self, entity_id: str, entries: list[dict]) -> None:
+    def update_user(self, entity_id: str, entries: list[dict],
+                    *, bypass_quarantine: bool = False) -> None:
         """Update a user profile with current-run observations.
 
         Updates EWMA profiles, adds to IP/hour/action sets, and
@@ -683,6 +694,10 @@ class EntityProfileStore:
         Args:
             entity_id: Username or identifier.
             entries: List of log entry dicts for this user in this run.
+            bypass_quarantine: S6 (round 5) — analyst-approved drains pass
+                True: a false-positive disposition already ruled on this
+                data, so a same-run re-flag must not re-hold it. Only the
+                drain path sets this; live batches still respect holds.
         """
         profile = self.get_or_create_user(entity_id)
         profile.last_seen = _now_iso()
@@ -694,7 +709,8 @@ class EntityProfileStore:
         # them later); warm-up no longer advances on held data (R6: the
         # increment moved after this branch).
         if (
-            self._is_quarantined(entity_id)
+            not bypass_quarantine
+            and self._is_quarantined(entity_id)
             # Cold entities absorb regardless: quarantine protects a WARM
             # baseline from attack inflation; holding a cold entity's batches
             # starves profile-building entirely during detection-phase ingest
@@ -1069,12 +1085,26 @@ def observation_rate(entries: list[dict]) -> float:
 def absorb_absolute_hours(profile, buckets: "dict[str, int]",
                           ewma_attr: str = "typical_event_count",
                           open_hour_attr: str = "open_hour",
-                          open_count_attr: str = "open_count") -> int:
-    """N4 (round 4): absorb absolute-hour buckets into a rate EWMA via the
-    profile's accumulator. A batch CLOSES every hour it completes (each
-    closed hour = one complete-hour observation) and accumulates its
-    newest hour as the profile's open state. Late (out-of-order) hours
-    merge into their own bucket WITHOUT reopening the accumulator.
+                          open_count_attr: str = "open_count",
+                          closed_attr: str = "closed_hours") -> int:
+    """N4 (round 4) + S4/S6 (round 5): absorb absolute-hour buckets into a
+    rate EWMA via the profile's accumulator. A batch CLOSES every hour it
+    completes (each closed hour = one complete-hour observation) and
+    accumulates its newest hour as the profile's open state.
+
+    Late data (S4): an hour OLDER than the accumulator that has not been
+    observed before becomes its own observation and is REGISTERED. A late
+    hour already in the closed registry is a duplicate pull (or a
+    days-late approved drain arriving in pieces) — the observation
+    already exists, so re-observing would double-count. Merge-once
+    semantics (self-review R6: the plan's v1 skip-everything silently ate
+    the S6 fix — approved drains are definitionally late, and
+    bypass_quarantine got them past the hold only for absorption to drop
+    every hour of them; "already observed" is the ONLY drop condition).
+
+    The network-rate accumulator passes net_* attrs; the closed-hours
+    registry is shared per (profile, ewma) pair via closed_attr, so the
+    event-rate and network-rate absorptions keep separate registries.
 
     Returns the number of EWMA observations made.
     """
@@ -1083,6 +1113,7 @@ def absorb_absolute_hours(profile, buckets: "dict[str, int]",
     ewma = getattr(profile, ewma_attr)
     open_hour = getattr(profile, open_hour_attr)
     open_count = getattr(profile, open_count_attr)
+    closed: list[str] = list(getattr(profile, closed_attr, None) or [])
     obs = 0
     for hour in sorted(buckets):
         if hour == open_hour:
@@ -1090,33 +1121,64 @@ def absorb_absolute_hours(profile, buckets: "dict[str, int]",
         elif hour > (open_hour or ""):
             if open_hour:
                 ewma.update(float(open_count))  # close the finished hour
+                closed.append(open_hour)
                 obs += 1
             open_hour, open_count = hour, buckets[hour]
+        elif hour in closed:
+            # Late duplicate of an already-observed hour: merge-once —
+            # the observation exists; do not re-observe.
+            continue
         else:
-            # Late data: older than the accumulator's hour. Close it as
-            # its own observation if it is a NEW absolute hour (dedup by
-            # the hour key); never move the accumulator backwards.
+            # Late but NEW: one observation of its own, registered.
             ewma.update(float(buckets[hour]))
+            closed.append(hour)
             obs += 1
+    if len(closed) > 48:  # bound the registry; sorted appends keep it ordered
+        closed = closed[-48:]
     setattr(profile, open_hour_attr, open_hour)
     setattr(profile, open_count_attr, open_count)
+    try:
+        setattr(profile, closed_attr, closed)
+    except (AttributeError, TypeError):
+        # silent by design: profile classes without the registry field
+        # (hosts mid-migration) — the registry is an optimization, not a
+        # correctness requirement for them (S4 sweep 2026-11-19)
+        pass
     return obs
 
 
-def current_hour_rate(entries: list[dict], profile) -> float | None:
-    """N4 (round 4): the DETECTION-side read — this batch's events in the
-    profile's open (or newly-opened) hour, PLUS the accumulator's count
-    for that same hour. Returns None when the batch carries no parseable
-    stamps (absent means absent)."""
+def hourly_rates(entries: list[dict], profile) -> dict[str, float]:
+    """S4 (round 5): per-absolute-hour rates for THIS batch, each composed
+    with the profile's open-hour accumulator where it applies. Every hour
+    in the batch is scored — a multi-hour upload's 03:00 burst is no
+    longer invisible because 23:00 happens to be newest. Callers take
+    the PEAK hour and compare it against the family-adjusted threshold.
+    """
     buckets = absolute_hour_counts(entries)
     if not buckets:
-        return None
-    newest = max(buckets)
-    if newest == getattr(profile, "open_hour", ""):
-        total = getattr(profile, "open_count", 0) + buckets[newest]
-    else:
-        total = buckets[newest]
-    return float(total)
+        return {}
+    open_hour = getattr(profile, "open_hour", "")
+    open_count = getattr(profile, "open_count", 0)
+    return {
+        hour: float(n + (open_count if hour == open_hour else 0))
+        for hour, n in buckets.items()
+    }
+
+
+def family_z_threshold(base_z: float, hours: int) -> float:
+    """S4 (round 5): Bonferroni family-wise threshold for scoring H hours
+    instead of one. Single-hour batches are untouched (the gate-7 demo's
+    z=2.021-vs-2.0 arc depends on hours<=1 returning base_z verbatim —
+    verified: the attack file spans exactly one hour).
+
+    2.0σ over 24 hours → 3.106σ (NormalDist().inv_cdf(1-(1-cdf(2.0))/24));
+    test expectations derive from this function, never from prose.
+    """
+    if hours <= 1:
+        return base_z
+    from statistics import NormalDist
+    p = 1 - NormalDist().cdf(base_z)
+    return NormalDist().inv_cdf(1 - p / hours)
 
 
 # ---------------------------------------------------------------------------
@@ -1345,7 +1407,10 @@ def drain_approved_pending(store: "EntityProfileStore") -> int:
         total = 0
         for entity_id, batches in apr.items():
             for entries in batches:
-                store.update_user(entity_id, entries)
+                # S6: approved by an analyst disposition — apply regardless
+                # of a same-run re-flag (the flag_quarantine-before-drain
+                # order re-held approved data and discarded the verdict)
+                store.update_user(entity_id, entries, bypass_quarantine=True)
                 total += 1
         _save_approved({})
         return total

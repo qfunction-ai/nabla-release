@@ -83,8 +83,8 @@ jobs:
         run: |
           ollama serve &
           sleep 5
-          ollama pull gemma4
-          ollama pull embeddinggemma
+          ollama pull gemma4:26b
+          ollama pull embeddinggemma:latest
 
       - name: Create .env for compose
         run: |
@@ -109,14 +109,19 @@ jobs:
       - name: Build and start nabla
         run: docker compose up -d nabla --build
 
+      - name: Bootstrap agents (S5: the injection eval needs a live supervisor)
+        run: docker compose exec -T nabla nabla bootstrap
+
+      - name: Copy tests into the container (S5: the image ships no tests)
+        run: docker compose cp tests nabla:/app/tests
+
       - name: Install pytest in nabla container
         run: docker compose exec -T -u root nabla pip install pytest -q
 
       - name: Run integration tests
         run: |
-          docker compose exec -T nabla pytest tests/ -v -k "integration" --tb=short
-        env:
-          NABLA_INTEGRATION: "1"
+          docker compose exec -T -e NABLA_INTEGRATION=1 nabla \
+            python -m pytest tests/ -v -k "integration" --tb=short
 
       - name: Tear down
         if: always()

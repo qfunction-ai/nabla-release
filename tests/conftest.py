@@ -25,12 +25,34 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip integration tests unless NABLA_INTEGRATION=1 is set."""
+    """S5 (round 5): the env var is a PROMISE, not a suggestion.
+
+    Unset (unit CI, local dev): integration tests skip — normal.
+    Set but the stack is unreachable: FAIL, not skip — a green job with
+    zero executed integration tests is a lie (the round-5 CI job passed
+    exactly that way: env on the runner, never passed into the
+    container). The asymmetry is the feature; don't "fix" it.
+    """
     if os.environ.get("NABLA_INTEGRATION") != "1":
         skip = pytest.mark.skip(reason="NABLA_INTEGRATION=1 not set")
         for item in items:
             if "integration" in item.keywords:
                 item.add_marker(skip)
+        return
+    # Set: probe the stack before collection — unreachable means the run
+    # must fail loudly, not skip quietly.
+    import urllib.request
+    from nabla.config import get_settings
+    health = f"{get_settings().letta_base_url.rstrip('/')}/v1/health/"
+    try:
+        with urllib.request.urlopen(health, timeout=5) as resp:
+            if resp.status != 200:
+                raise OSError(f"health returned {resp.status}")
+    except Exception as e:  # noqa: BLE001 — any probe failure is the same verdict
+        raise pytest.UsageError(
+            f"NABLA_INTEGRATION=1 is set but the Letta stack is unreachable "
+            f"at {health} ({e}). Failing instead of skipping: a green run "
+            f"with zero integration tests is a lie (S5).")
 
 
 # ---------------------------------------------------------------------------

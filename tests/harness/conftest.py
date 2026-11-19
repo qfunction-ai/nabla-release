@@ -129,6 +129,15 @@ def drive_pipeline(entries, tmp_path, monkeypatch, detection_phase="detection",
     if result.entity_profiles is not None:
         for eid in result.entity_profiles.users:
             etm[eid] = "user"
+        # Mirror orchestration.py's entity_type_map exactly: hosts and IPs
+        # are typed too. The harness omitted them, so host-keyed entities
+        # fell into compute_risk_scores' "user" default — a shape the real
+        # pipeline never produces (round-5 Phase 0: host-side assertions
+        # need honest typing).
+        for eid in result.entity_profiles.hosts:
+            etm[eid] = "host"
+        for eid in result.entity_profiles.ips:
+            etm[eid] = "ip"
     try:
         store = risk.compute_risk_scores(
             result.anomalies, etm,

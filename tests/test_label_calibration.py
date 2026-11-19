@@ -193,10 +193,10 @@ class TestR8PerFindingScope:
         on one labels only ITS anomalies, not the other finding's."""
         import nabla.incidents as inc
         import json as J
-        # Two findings for alice: one brute_force, one off_hours
+        # Two findings for alice: one lolbin, one off_hours
         incs = []
         for ftype, aids, methods in [
-            ("brute_force_attempt", ["bf-1", "bf-2"], ["failed_login_ratio"]),
+            ("lolbin_attempt", ["bf-1", "bf-2"], ["failed_login_ratio"]),
             ("off_hours_activity", ["oh-1"], ["off_hours"]),
         ]:
             incs.append({
@@ -211,7 +211,7 @@ class TestR8PerFindingScope:
         (env / "incidents.json").write_text(J.dumps(incs))
         monkeypatch.setattr(inc, "_incidents_file", lambda: str(env / "incidents.json"))
 
-        inc.update_incident("inc-brute_force_attempt", disposition="false_positive")
+        inc.update_incident("inc-lolbin_attempt", disposition="false_positive")
 
         from nabla.rl.calibration import current_labels
         labels = current_labels()
@@ -221,20 +221,20 @@ class TestR8PerFindingScope:
 
 
 class TestR9BanditReset:
-    def test_reset_script_exists_and_clears(self, env):
-        """R9: the one-time bandit reset (mislabel-poisoned state clears)."""
+    def test_schema_gated_load_resets_preschema_state(self, env):
+        """R9 (round 3) + S11 (round 5): reset_poisoned_bandit is deleted
+        (dead code — the schema-gated load IS the reset). Pre-schema
+        state files load as uniform priors; post-schema files load as
+        themselves."""
         from nabla.rl.bandit import DetectionMethodBandit
-        from pathlib import Path
-        # Poisoned state (alpha from the mislabeled-parser era)
-        bandit = DetectionMethodBandit.__new__(DetectionMethodBandit)
-        bandit.methods = ["brute_force"]
-        bandit.alpha = {"brute_force": 50.0}
-        bandit.beta = {"brute_force": 1.0}
-        state_file = env / "rl_state.json"
         import json as J
-        state_file.write_text(J.dumps({"bandit": {"alpha": bandit.alpha, "beta": bandit.beta}}))
-        # The reset: run the migration helper
-        from nabla.rl.calibration import reset_poisoned_bandit
-        reset_poisoned_bandit(state_file)
-        data = J.loads(state_file.read_text())
-        assert data.get("bandit", {}).get("alpha", {}).get("brute_force", 1.0) == 1.0, "alpha reset to prior"
+        # Pre-schema poisoned state (no schema marker)
+        (env / "rl_state.json").write_text(J.dumps(
+            {"bandit": {"alpha": {"lolbin": 50.0}, "beta": {"lolbin": 1.0}}}))
+        b = DetectionMethodBandit.load(str(env / "rl_state.json"))
+        assert b.alpha.get("lolbin", 1.0) == 1.0, "pre-schema state resets to priors"
+        # Post-schema learned state survives
+        (env / "rl_state2.json").write_text(J.dumps(
+            {"schema": 2, "bandit": {"alpha": {"lolbin": 7.0}, "beta": {"lolbin": 1.0}}}))
+        b2 = DetectionMethodBandit.load(str(env / "rl_state2.json"))
+        assert b2.alpha.get("lolbin") == 7.0, "post-schema state loads as itself"

@@ -121,9 +121,26 @@ class DetectionMethodBandit:
         return bandit
 
     def save(self, filepath: str) -> None:
-        """Save bandit state to a JSON file atomically."""
-        from nabla.persistence import atomic_write_json
-        atomic_write_json(filepath, self.to_dict())
+        """Save bandit state into the combined RL state file.
+
+        S8 (round 5): the old save wrote to_dict() FLAT to the file's top
+        level — dropping the schema marker and the combined-file shape,
+        so any save→load roundtrip reset the bandit to uniform priors
+        (verified live: alpha 20.0 → save → load → 1.0). Latent today
+        (nothing in production calls save — run_rl_update returns before
+        any bandit interaction), but the save/load roundtrip test is the
+        gate the future calibration wiring must pass.
+
+        N15 discipline (self-review R8): file_lock across the whole
+        read-modify-write — the combined file carries other consumers'
+        keys that an unlocked racing writer would clobber.
+        """
+        from nabla.persistence import atomic_write_json, file_lock, load_json_safe
+        with file_lock(filepath):
+            data = load_json_safe(filepath) or {}
+            data["schema"] = 2
+            data["bandit"] = self.to_dict()
+            atomic_write_json(filepath, data)
 
     @classmethod
     def load(cls, filepath: str) -> "DetectionMethodBandit":

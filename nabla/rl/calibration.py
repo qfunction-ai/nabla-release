@@ -302,23 +302,6 @@ def run_calibration() -> dict:
     return report
 
 
-def reset_poisoned_bandit(state_file) -> None:
-    """R9 (round 3): one-time reset of bandit alpha/beta learned by the
-    deleted text parser (which mislabeled findings — the state it produced
-    scales risk weights under wrong premises). Resets to uniform priors.
-    """
-    import json as _json
-    from pathlib import Path as _P
-    p = _P(state_file)
-    if not p.exists():
-        return
-    data = _json.loads(p.read_text())
-    bandit = data.get("bandit") or {}
-    if bandit.get("alpha") or bandit.get("beta"):
-        data["bandit"] = {"alpha": {}, "beta": {}, "reset_at": _now_iso()}
-        p.write_text(_json.dumps(data, indent=2))
-
-
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()

@@ -201,14 +201,20 @@ def _detect_volume_anomaly(
             continue
         # Score only. The baseline is learned in absorption (update_user),
         # which runs after detection — so this is still score-then-learn.
-        # N4 (round 4): current-hour read against the complete-hour network
-        # EWMA (the net accumulator lives on the same profile).
-        from nabla.baselines import current_hour_rate
-        _nr = current_hour_rate(user_net, profile)
-        if _nr is None:
+        # N4 (round 4) + S4 (round 5): peak-hour read against the
+        # complete-hour network EWMA (the net accumulator lives on the same
+        # profile). Multi-hour batches expose their burst hour, not just
+        # the newest.
+        from nabla.baselines import hourly_rates, family_z_threshold
+        _rates = hourly_rates(user_net, profile)
+        if not _rates:
             continue  # absent stamps: absent means absent (N2.3)
+        _peak_h = max(_rates, key=lambda h: _rates[h])
+        _nr = _rates[_peak_h]
         z = ewma.z_score(_nr)
-        if z > sigma:
+        if z > family_z_threshold(sigma, len(_rates)):
+            _peak_events = [e for e in user_net
+                            if (e.get("timestamp", "") or "")[:13] == _peak_h] or user_net
             anomalies.append({
                 "entity": user,
                 "entity_type": "user",
@@ -217,15 +223,15 @@ def _detect_volume_anomaly(
                 "severity": "high" if z > sigma * 1.5 else "medium",
                 "confidence": min(0.95, 0.5 + z / 10),
                 "details": (
-                    f"User {user} has {count} network events "
-                    f"(z-score {z:.1f} vs baseline {ewma.value:.0f})"
+                    f"User {user} peak network hour {_peak_h} rate "
+                    f"{_nr:.0f}/hr (z-score {z:.1f} vs baseline {ewma.value:.0f})"
                 ),
                 "mitre_attack": [_MITRE_T1048],
                 # N2.1 (round 4): event time, not wall time — a wall stamp
                 # pushed the risk reference clock to today and decayed every
                 # replayed anomaly in the batch to months-old. Absent means
                 # absent (empty string), never "now".
-                "timestamp": max((e.get("timestamp", "") for e in user_net),
+                "timestamp": max((e.get("timestamp", "") for e in _peak_events),
                                  default=""),
             })
 

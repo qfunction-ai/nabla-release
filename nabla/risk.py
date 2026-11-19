@@ -90,6 +90,48 @@ PHASE_CATEGORIES: dict[str, str] = {
     "command_and_control": "lateral_movement",
 }
 
+# ---------------------------------------------------------------------------
+# S1 (round 5): machine-account method classification.
+#
+# Machine principals are excluded from BEHAVIORAL risk (an account with no
+# habits has nothing to deviate from — svc-jenkins racking up z-scores on
+# its own job volume buries human incidents) but NOT from signature and
+# exfiltration risk: an attack_script run as root is exactly as much an
+# attack as one run as carol. The union of the two sets must equal the
+# emitted corpus (detection_method ∪ type strings across the detector
+# modules) — tests/test_method_classification.py enforces both directions,
+# so name drift fails the suite, not production.
+#
+# Emission scan definition (round-5 plan D1, Epsilon REQUIRED 2):
+#   emitted = {detection_method literals} ∪ {type literals} over
+#             detection.py, exfiltration.py, temporal.py, provenance.py,
+#             gcn_lof.py
+# ---------------------------------------------------------------------------
+
+BEHAVIORAL_METHODS: frozenset[str] = frozenset({
+    "z_score", "entity_z_score", "activity_spike", "entity_activity_spike",
+    "off_hours", "entity_off_hours", "multi_ip", "multiple_source_ips",
+    "entity_new_ip", "entity_behavior_composite", "ewma", "cusum",
+    "entity_auth_failure",
+})
+
+SIGNATURE_KEEP: frozenset[str] = frozenset({
+    # failed_login_ratio deliberately KEPT for machine accounts: brute
+    # force AGAINST a service account is real attack signal (accepted
+    # risk measured by the Phase-0 benign-svc-noise harness bound).
+    "failed_login_ratio",
+    "lolbin", "parent_child", "attack_script", "renamed_tool",
+    "registry_abuse", "suspicious_path", "integrity_anomaly",
+    "unusual_process", "critical_host_escalation",
+    "network_anomaly", "enumeration_behavior",
+    "action_sequence", "dns_tunneling", "provenance_community", "pre_flagged",
+    "temporal_chain", "exfil_volume", "exfil_destination", "exfil_staging",
+})
+# Host-side methods (entity_host_composite, entity_new_process,
+# entity_unusual_process) are in NEITHER set, deliberately: the machine
+# filter applies only to etype == "user"; hosts always score (round-5
+# plan D1, Epsilon fold 1 — recorded so the next round doesn't "fix" it).
+
 # All valid threat categories
 THREAT_CATEGORIES = ("insider_threat", "account_compromise", "data_exfiltration", "lateral_movement")
 
@@ -453,6 +495,32 @@ def _resolve_categories(anomaly: dict) -> list[str]:
     return categories if categories else ["insider_threat"]
 
 
+def risk_entities(anomaly: dict) -> list[tuple[str, str]]:
+    """S2 (round 5): the (entity_id, entity_type) pairs this anomaly
+    contributes risk to.
+
+    Precedence:
+    - an explicit ``entity`` key wins (single attribution, typed by the
+      anomaly's own entity_type or the caller's map);
+    - otherwise a user AND a host BOTH receive it — endpoint detections
+      name both, and "the LOLBin bob ran on ws1" is risk for bob and for
+      ws1 (the old grouping key read only ``user`` and silently dropped
+      host-only anomalies whose ``user`` is "");
+    - otherwise source_ip as an ip entity;
+    - otherwise nothing (same drop as today, now by decision).
+    """
+    if anomaly.get("entity"):
+        return [(str(anomaly["entity"]), str(anomaly.get("entity_type", "user")))]
+    out: list[tuple[str, str]] = []
+    if anomaly.get("user"):
+        out.append((str(anomaly["user"]), "user"))
+    if anomaly.get("host"):
+        out.append((str(anomaly["host"]), "host"))
+    if not out and anomaly.get("source_ip"):
+        out.append((str(anomaly["source_ip"]), "ip"))
+    return out
+
+
 def compute_risk_scores(
     anomalies: list[dict],
     entity_type_map: dict[str, str],
@@ -505,12 +573,15 @@ def compute_risk_scores(
         if cid:
             chain_ids_in_anomalies.add(cid)
 
-    # Group anomalies by entity
+    # Group anomalies by entity — S2 (round 5): attribution goes through
+    # risk_entities() so host-only anomalies (host detectors ship
+    # "user": "") land on the host instead of vanishing into an empty
+    # grouping key, and user+host endpoint detections raise BOTH.
     entity_anomalies: dict[str, list[dict]] = defaultdict(list)
     for anomaly in anomalies:
-        entity = anomaly.get("entity", anomaly.get("user", "unknown"))
-        if entity:
-            entity_anomalies[entity].append(anomaly)
+        for entity_id, etype in risk_entities(anomaly):
+            entity_anomalies[entity_id].append(anomaly)
+            entity_type_map.setdefault(entity_id, etype)
 
     # A7: the entire risk computation runs on the DATA clock (newest ingested
     # event), not the wall clock — decay, stamps, and trend all share one
@@ -533,17 +604,25 @@ def compute_risk_scores(
 
     for entity_id, entity_anoms in entity_anomalies.items():
         etype = entity_type_map.get(entity_id, "user")
-        # N-harness (round 4, found live): machine principals are excluded
-        # from BEHAVIORAL baselining (F5) but nothing excluded them from risk
-        # accumulation — svc-jenkins/root/-/adm rack up z/spike anomalies on
-        # every batch (their volume IS their job) and outrank the attack
-        # user. A machine account has no behavior to deviate from, so it
-        # accumulates no behavioral risk. Same predicate as detection's
-        # exclusion — one definition of "machine", not two.
+        # N-harness (round 4) + S1 (round 5): machine principals are
+        # excluded from BEHAVIORAL risk (F5: svc-jenkins/root/-/adm rack
+        # up z/spike anomalies on every batch — their volume IS their
+        # job — and outrank the attack user). But round 5 found the fix
+        # overcorrected: skipping the WHOLE entity also dropped signature
+        # and exfiltration detections (attack_script as root → zero risk).
+        # S1: drop only the behavioral methods; signature/exfil keep full
+        # weight. An entity whose anomalies are all behavioral (the normal
+        # machine-account case) still contributes nothing.
         if etype == "user":
             from nabla.utils import is_baselineable_user
             if not is_baselineable_user(entity_id):
-                continue
+                entity_anoms = [
+                    a for a in entity_anoms
+                    if str(a.get("detection_method", a.get("type", "")))
+                    not in BEHAVIORAL_METHODS
+                ]
+                if not entity_anoms:
+                    continue
         score = store.get_or_create(entity_id, etype)
 
         # N2.2 (round 4): the PER-ENTITY reference clock. R12's batch-max
