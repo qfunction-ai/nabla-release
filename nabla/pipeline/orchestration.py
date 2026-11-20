@@ -131,7 +131,7 @@ def _summarize_anomalies_for_run(detection, anomaly_count: int) -> list[dict]:
     return [_compact_anomaly(a) for a in combined]
 
 
-def run_pipeline(
+def _run_pipeline_body(
     client: Letta | None = None,
     log_types: list[str] | str = "all",
     log_count: int = 20,
@@ -168,6 +168,7 @@ def run_pipeline(
     """
     if gcn_lof_enabled:
         _gcn_lof_warning()
+
     if client is None:
         from nabla.client import get_client
         client = get_client()
@@ -305,10 +306,15 @@ def run_pipeline(
                 from nabla.baselines import drain_approved_pending, drain_released_pending
                 approved = drain_approved_pending(detection.entity_profiles)
                 ttl_applied = drain_released_pending(detection.entity_profiles)
-                if approved or ttl_applied:
+                # R6-16: clear AFTER the store save below (the profile
+                # save happens in this run's persistence step) — the
+                # drain-batch IDs make any crash window idempotent
+                from nabla.baselines import clear_approved_after_save
+                _cleared = clear_approved_after_save()
+                if approved or ttl_applied or _cleared:
                     logger.info(
-                        "Quarantine drain: %d approved batches applied, %d TTL-released",
-                        approved, ttl_applied)
+                        "Quarantine drain: %d approved batches applied, %d TTL-released, %d entities cleared post-save",
+                        approved, ttl_applied, _cleared)
                 from nabla.baselines import group_entries_by_entity
                 groups = group_entries_by_entity(ingestion.entries)
                 for (entity_type, entity_id), group_entries in groups.items():
@@ -437,6 +443,21 @@ def run_pipeline(
                 for eid in detection.entity_profiles.ips:
                     entity_type_map[eid] = "ip"
 
+            # CLOCK-SPEC Rule 4 (round 6): per-entity EVENT clocks — each
+            # entity's newest VALID event this batch, attributed exactly as
+            # risk attributes anomalies (risk_entities), so hosts advance
+            # too (C6). Events, not anomalies: flagged-once users who keep
+            # working still decay (R6-4).
+            from nabla.risk import risk_entities as _re
+            _ev_clocks: dict[str, str] = {}
+            for _e in (ingestion.entries or []):
+                _ts = str(_e.get("timestamp", "") or "")
+                if not _ts:
+                    continue  # absent means absent
+                for _eid, _et in _re(_e):
+                    if _ts > _ev_clocks.get(_eid, ""):
+                        _ev_clocks[_eid] = _ts
+
             risk_store = compute_risk_scores(
                 anomalies=detection.anomalies,
                 entity_type_map=entity_type_map,
@@ -446,6 +467,7 @@ def run_pipeline(
                 bandit_store=bandit_store,
                 half_life_hours=settings.risk_score_decay_half_life_hours,
                 max_anomalies=settings.risk_score_max_anomalies,
+                event_clocks=_ev_clocks,
             )
             high_risk = sum(1 for s in risk_store.scores.values() if s.overall >= settings.risk_score_investigation_cutoff)
             if high_risk > 0:
@@ -545,3 +567,36 @@ def _gcn_lof_warning() -> None:
         "— treat every GCN-LOF finding as unvetted signal.",
         file=sys.stderr,
     )
+
+
+def run_pipeline(
+    client: Letta | None = None,
+    log_types: list[str] | str = "all",
+    log_count: int = 20,
+    source: str = "auto",
+    watchlist_groups: list[str] | None = None,
+    reset_ingestion: bool = False,
+    file_path: str | None = None,
+    file_format: str | None = None,
+    column_map: dict[str, str] | None = None,
+    update_baseline: bool = False,
+    skip_graph: bool = False,
+    gcn_lof_enabled: bool = False,
+    ingest_meta: dict | None = None,
+) -> dict[str, str]:
+    """Public entry: the pipeline body under the R6-8 run guard (per-call
+    scope — same-process sequential runs like the CLI chunk loop compose;
+    concurrent runs across processes fail fast, never queue). Signature
+    mirrors the body exactly (introspection-friendly: N11's default check
+    reads it)."""
+    from nabla.pipeline.run_guard import acquire_run_guard
+    guard = acquire_run_guard()
+    try:
+        return _run_pipeline_body(client, log_types=log_types, log_count=log_count,
+                                  source=source, watchlist_groups=watchlist_groups,
+                                  reset_ingestion=reset_ingestion, file_path=file_path,
+                                  file_format=file_format, column_map=column_map,
+                                  update_baseline=update_baseline, skip_graph=skip_graph,
+                                  gcn_lof_enabled=gcn_lof_enabled, ingest_meta=ingest_meta)
+    finally:
+        guard.release()

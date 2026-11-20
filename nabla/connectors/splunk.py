@@ -228,7 +228,7 @@ class SplunkConnector:
         elif isinstance(ts, str) and ts:
             normalized["timestamp"] = ts
         else:
-            normalized["timestamp"] = datetime.now(timezone.utc).isoformat()
+            normalized["timestamp"] = ""  # R6-14/CLOCK Rule 2: absent means absent — never "now" (a wall stamp moved the data clock during backfills)
 
         # Copy all other fields as-is (user's query already renamed them)
         for key, value in raw.items():
@@ -463,6 +463,15 @@ class SplunkConnector:
             timeout=httpx.Timeout(120.0, connect=30.0),
             follow_redirects=False,
         ) as client:
+            # R6-13 (round 6, D11): validation BEFORE credentials leave the
+            # building — the old order authenticated first, so a
+            # rebinding/validation failure had already leaked the token.
+            # Honors the documented validate_url=False test escape.
+            if getattr(self.config, "validate_url", True):
+                from nabla.ssrf import validate_connector_url as _vcu
+                _ok, _err = _vcu(str(self.config.host))
+                if not _ok:
+                    raise ValueError(f"Splunk host failed SSRF re-validation: {_err}")
             # Authenticate if needed (Splunk auth endpoint may redirect)
             self._authenticate(client, _original_hostname)
 

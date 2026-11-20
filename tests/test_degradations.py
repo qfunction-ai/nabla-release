@@ -150,7 +150,7 @@ class TestOrchestrationWiring:
 
         from nabla.pipeline import orchestration
 
-        src = inspect.getsource(orchestration.run_pipeline)
+        src = inspect.getsource(orchestration._run_pipeline_body)
         assert "collect_degradations(degradations)" in src, (
             "run_pipeline does not wrap run_detection in collect_degradations — "
             "detector failures will not reach the run record"
@@ -161,5 +161,5 @@ class TestOrchestrationWiring:
 
         from nabla.pipeline import orchestration
 
-        src = inspect.getsource(orchestration.run_pipeline)
+        src = inspect.getsource(orchestration._run_pipeline_body)
         assert 'run_record["degradations"] = degradations' in src

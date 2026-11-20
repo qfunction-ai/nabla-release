@@ -29,7 +29,7 @@ A single LLM supervisor agent plus deterministic pipeline stages, coordinated th
 - **Anomaly Detection** — deterministic Python function (`detection.py`), 29 methods (20 base + 9 entity-specific), no context window limit
 - **Threat Correlation** — deterministic Python function (`correlation.py`), replaces LLM threat agent. 9.4x faster than the previous agent-based approach
 - **Supervisor** — the only agent: single LLM inference step. Reads blocks directly, no tools needed
-- **Risk + RL Update** — deterministic entity risk scoring, peer-group re-clustering, and Q-learning/bandit threshold adaptation
+- **Risk + Calibration** — deterministic entity risk scoring, peer-group re-clustering, and label-driven threshold calibration (the retired Q-learning adapter is documented history; see `nabla/rl/calibration.py`)
 
 The deterministic stages write, and the supervisor reads, **nine shared memory blocks**: `ingestion_status`, `anomaly_queue`, `threat_findings`, `rl_thresholds`, `graph_context`, `attack_mapping`, `lolbin_db`, `environment_context`, `system_phase`.
 

@@ -34,6 +34,10 @@ async def chat_stream(
     body: ChatRequest,
     _auth: None = Depends(require_user),
 ):
+    # R6-12 (round 6): chat messages are attacker-influenced text headed
+    # for the supervisor's persistent context — cap them.
+    if len(body.message) > 8000:
+        raise HTTPException(status_code=413, detail="message too long (8KB cap)")
     """Stream a conversation with the supervisor agent via SSE.
 
     The supervisor agent reads shared blocks (anomaly_queue,

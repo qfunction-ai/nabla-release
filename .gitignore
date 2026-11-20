@@ -1,26 +1,43 @@
-# Environment — never commit
+# Environment and secrets
 .env
-*.env
-!.env.example
 
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
 *.egg-info/
+dist/
+build/
+.eggs/
+
+# Testing
 .pytest_cache/
+htmlcov/
 .coverage
 coverage.xml
-.mypy_cache/
-.ruff_cache/
 
-# Node
-node_modules/
-frontend/dist/
+# Local backups (pg_dump etc.)
+backups/
 
-# Data — runtime state, never ship
-/data/
-*.jsonl
+# Jupyter checkpoints
+.ipynb_checkpoints/
 
-# OS/harness
-.DS_Store
+# Letta Code local settings
 .letta/
+
+# IDE
+.vscode/
+.idea/
+
+# Docker data volumes (local)
+/data/
+
+# Sample/test data files
+*.sysmon
+sysmon_*.txt
+sample_*.txt
+windows-sysmon.txt
+
+# Course datasets (large, regenerable via scripts/export_course_dataset.py)
+dataset-v1/
+.DS_Store

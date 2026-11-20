@@ -263,7 +263,9 @@ def _normalize_timestamp(ts: str) -> str:
     is not a timestamp is now reported and treated as absent.
     """
     if not ts:
-        return datetime.now(timezone.utc).isoformat()
+        # CLOCK-SPEC Rule 2 (round 6): absent means absent — the old
+        # wall-clock stamp moved data clocks during SIEM backfill (R6-14)
+        return ""
 
     text = ts.strip()
 

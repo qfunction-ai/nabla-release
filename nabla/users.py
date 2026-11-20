@@ -53,9 +53,15 @@ class UserStore:
                 return json.load(f)
         except FileNotFoundError:
             return {}
-        except (json.JSONDecodeError, OSError):
-            logger.warning("users file unreadable (%s) — treating as empty", self.path)
-            return {}
+        except (json.JSONDecodeError, OSError) as e:
+            # R6-9 (round 6): FAIL CLOSED. The old behavior (return {})
+            # made count() == 0, which REOPENED first-registration and let
+            # create() overwrite the file — wiping the real admin with the
+            # first visitor. A present-but-unreadable file is an incident,
+            # not an empty store.
+            raise RuntimeError(
+                f"users file exists but cannot be read ({self.path}: {e}) — "
+                f"failing closed; refusing to treat as empty (R6-9)") from e
 
     def count(self) -> int:
         return len(self._load())
@@ -113,6 +119,14 @@ class UserStore:
             users = self._load()
             if username in users:
                 raise ValueError("Username already exists")
+            # R6-10 (round 6): the O_EXCL loser falls through to here, and
+            # the route's users-exist check has already passed. Re-check:
+            # if the store is no longer empty, this is a race loser trying
+            # to become a SECOND admin — reject.
+            if len(users) > 0 and user.get("role") == "admin":
+                raise PermissionError(
+                    "first registration already won — refusing to create "
+                    "a second admin (R6-10)")
             users[username] = user
             atomic_write_json(self.path, users)
 
@@ -138,13 +152,21 @@ def load_jwt_secret(path: str) -> str:
 
     secret = secrets.token_urlsafe(32)
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    # Round-6 low: the O_EXCL sat OUTSIDE the try — a first-boot race
+    # raised an uncaught FileExistsError. Inside, the loser reads the
+    # winner's file (and an empty winner file — crash mid-write —
+    # regenerates instead of failing every login with a 500).
     try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         with os.fdopen(fd, "w") as f:
             f.write(secret)
     except FileExistsError:
-        # Raced another first-boot; read whatever won.
         with open(path) as f:
-            return f.read().strip()
+            winner = f.read().strip()
+        if winner:
+            return winner
+        # Empty (crashed mid-write): regenerate non-exclusively
+        with open(path, "w") as f:
+            f.write(secret)
     logger.info("Generated JWT signing secret at %s", path)
     return secret

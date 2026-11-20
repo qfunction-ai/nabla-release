@@ -212,12 +212,12 @@ class SumoLogicConnector:
         if system_time:
             normalized["timestamp"] = system_time
         else:
-            normalized["timestamp"] = datetime.now(timezone.utc).isoformat()
+            normalized["timestamp"] = ""  # R6-14/CLOCK Rule 2: absent means absent — never "now" (a wall stamp moved the data clock during backfills)
 
         # Host from computer field
         computer = event.get("computer", "")
         if computer:
-            # Strip domain suffix (e.g. WIN-DC01.corp.example → WIN-DC01)
+            # Strip domain suffix (e.g. EC2AMAZ-OCPNFK9.qfunction.ai → EC2AMAZ-OCPNFK9)
             normalized["host"] = computer.split(".")[0] if "." in computer else computer
 
         # Event ID and action
@@ -341,7 +341,7 @@ class SumoLogicConnector:
         if ts_match:
             normalized["timestamp"] = ts_match.group(1)
         else:
-            normalized["timestamp"] = datetime.now(timezone.utc).isoformat()
+            normalized["timestamp"] = ""  # R6-14/CLOCK Rule 2: absent means absent — never "now" (a wall stamp moved the data clock during backfills)
 
         # Extract computer (host)
         comp_match = cls._XML_COMPUTER_RE.search(raw_text)
@@ -475,7 +475,7 @@ class SumoLogicConnector:
         elif isinstance(ts, str) and ts:
             normalized["timestamp"] = ts
         else:
-            normalized["timestamp"] = datetime.now(timezone.utc).isoformat()
+            normalized["timestamp"] = ""  # R6-14/CLOCK Rule 2: absent means absent — never "now" (a wall stamp moved the data clock during backfills)
 
         # Map SumoLogic metadata fields to canonical names
         if "_sourceHost" in raw and "host" not in raw:

@@ -33,6 +33,15 @@ logger = get_logger("server")
 async def lifespan(app: FastAPI):
     """Application lifespan — startup and shutdown."""
     logger.info("Nabla web server starting up")
+    try:
+        # CLOCK-SPEC migration (round 6): idempotent (marker short-circuits)
+        from nabla.config import get_settings
+        from nabla.pipeline.clock_migration import run_clock_migration
+        summary = run_clock_migration(get_settings().data_dir)
+        if not summary.get("skipped"):
+            logger.info("clock migration ran: %s", summary)
+    except Exception as e:  # noqa: BLE001 — migration failure must not block boot
+        logger.warning("clock migration failed (non-fatal): %s", e)
     yield
     logger.info("Nabla web server shutting down")
 
@@ -103,4 +112,12 @@ def main():
         host=settings.web_host,
         port=settings.web_port,
         reload=False,
+        # R6-11 (round 6): trust ONLY the nginx container's fixed IP
+        # (172.28.0.2 in compose) for X-Forwarded-For — rate limiting and
+        # audit logs key on the real client IP. The compose network at
+        # large is NOT trusted: port 8002 is host-published, and requests
+        # arriving via the bridge gateway from inside that network could
+        # otherwise fake the header.
+        forwarded_allow_ips=getattr(
+            settings, "forwarded_allow_ips", "172.28.0.2"),
     )

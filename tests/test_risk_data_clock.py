@@ -173,6 +173,9 @@ class TestR1R2Round3:
 
         start = datetime.now(timezone.utc)
         monkeypatch.setattr(risk, "_data_clock", lambda: start)  # fixed clock for determinism
+        # Rule 2 ceiling travels with the simulated clock (round 6)
+        monkeypatch.setattr(risk, "_future_ceiling",
+                            lambda tt=None: (tt or start) + timedelta(hours=3))
 
         anom1 = {**ANOMALY, "anomaly_id": "seed-anom", "severity": "high",
                  "confidence": 1.0, "timestamp": start.isoformat()}
@@ -185,6 +188,7 @@ class TestR1R2Round3:
         for i in range(24):
             t = t + timedelta(minutes=5)
             monkeypatch.setattr(risk, "_data_clock", lambda tt=t: tt)
+            monkeypatch.setattr(risk, "_future_ceiling", lambda tt=t: tt + timedelta(hours=3))
             other = {**ANOMALY, "anomaly_id": f"other-{i}", "entity": "bob",
                      "timestamp": t.isoformat()}
             risk.compute_risk_scores([other], {"alice": "user", "bob": "user"}, half_life_hours=24.0)
@@ -243,4 +247,8 @@ class TestR12BothOrders:
                                        half_life_hours=24.0)
         bob = st2.scores["bob"].overall
         assert bob > 1.0, f"replay zeroed ({bob}) — 80-day disease, not 1-day decay"
-        assert bob < 4.0, f"decay not applied ({bob})"
+        # CLOCK-SPEC Rule 4 (round 6): bob is a FRESH entity in this store —
+        # his clock starts at his own data (Aug-30), age zero. The old
+        # <4.0 assert encoded the retired R12 floor (another entity's
+        # newer data aging bob). The 80-day guard above is the invariant
+        # that survives: replay data does not zero against wall time.

@@ -222,9 +222,14 @@ async def import_state(
 
     settings = get_settings()
 
-    # Save uploaded file to temp location
+    # Round-6 low: cap uploads (the whole file was read into memory with
+    # no limit) — 64MB is orders beyond any legitimate state export
+    MAX_IMPORT_BYTES = 64 * 1024 * 1024
+    content = await file.read(MAX_IMPORT_BYTES + 1)
+    if len(content) > MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=413,
+                            detail="import file exceeds 64MB cap")
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
-        content = await file.read()
         f.write(content)
         input_path = f.name
 

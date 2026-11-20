@@ -21,7 +21,7 @@ import json
 import os
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from nabla.log import get_logger
 from nabla.persistence import atomic_write_json
@@ -295,6 +295,11 @@ def _hours_since(timestamp: str) -> float:
     return max(0, elapsed)
 
 
+def _future_ceiling() -> datetime:
+    """Rule 2's wall+1h validation ceiling (patchable for simulated time)."""
+    return datetime.now(timezone.utc) + timedelta(hours=1)
+
+
 def _data_clock() -> datetime:
     """The risk-computation reference clock (A7 remediation).
 
@@ -310,7 +315,8 @@ def _data_clock() -> datetime:
         state_path = get_settings().system_state_file
         if os.path.exists(state_path):
             import json as _json
-            state = _json.load(open(state_path))
+            with open(state_path) as _f:  # round-6 low: the handle leaked
+                state = _json.load(_f)
             newest = state.get("data_newest_ts")
             if newest:
                 from nabla.utils import parse_iso_timestamp
@@ -530,6 +536,7 @@ def compute_risk_scores(
     bandit_store=None,
     half_life_hours: float = 24.0,
     max_anomalies: int = 20,
+    event_clocks: dict[str, str] | None = None,
 ) -> EntityRiskStore:
     """Compute risk scores for all entities mentioned in anomalies.
 
@@ -598,11 +605,17 @@ def compute_risk_scores(
     from nabla.utils import parse_iso_timestamp as _pit
     for a in anomalies:
         dt = _pit(str(a.get("timestamp", "") or ""))
-        if dt is not None and dt > ref_clock:
+        # CLOCK-SPEC Rule 2/3 (round 6): the batch clock NEVER advances on
+        # a future stamp — wall + 1h is the ceiling. The R6-1 probe: one
+        # 2099-stamped line dragged every entity's decay reference 73
+        # years forward and zeroed the batch. _future_ceiling() is
+        # patchable: simulated-time tests advance it with their clock.
+        if dt is not None and ref_clock < dt <= _future_ceiling():
             ref_clock = dt
     now = ref_clock.isoformat()
 
-    for entity_id, entity_anoms in entity_anomalies.items():
+    # list(): Rule 4's machine-filter REMOVES entities mid-iteration
+    for entity_id, entity_anoms in list(entity_anomalies.items()):
         etype = entity_type_map.get(entity_id, "user")
         # N-harness (round 4) + S1 (round 5): machine principals are
         # excluded from BEHAVIORAL risk (F5: svc-jenkins/root/-/adm rack
@@ -622,6 +635,10 @@ def compute_risk_scores(
                     not in BEHAVIORAL_METHODS
                 ]
                 if not entity_anoms:
+                    # CLOCK-SPEC Rule 4 (round 6): REMOVE the entity from the
+                    # map, don't skip it — a skipped entity never reaches the
+                    # inactive-decay branch and its score froze (R6-15)
+                    entity_anomalies.pop(entity_id, None)
                     continue
         score = store.get_or_create(entity_id, etype)
 
@@ -638,10 +655,24 @@ def compute_risk_scores(
         ent_ref = _pit(str(score.data_clock or "")) if score.data_clock else None
         for a in entity_anoms:
             dt = _pit(str(a.get("timestamp", "") or ""))
-            if dt is not None and (ent_ref is None or dt > ent_ref):
+            # CLOCK-SPEC Rule 2 (round 6): entity clocks take the same
+            # wall+1h ceiling as the batch clock — mallory's 2099 line
+            # must not pin HER entity clock either (a pinned clock makes
+            # every future anomaly of hers score zero: the evasion).
+            if (dt is not None and (ent_ref is None or dt > ent_ref)
+                    and dt <= _future_ceiling()):
                 ent_ref = dt
-        if ent_ref is None or ent_ref < ref_clock:
-            ent_ref = max(ent_ref, ref_clock) if ent_ref else ref_clock
+        # CLOCK-SPEC Rule 4 (round 6): the entity's reference advances from
+        # its newest EVENT this batch (risk_entities-attributed), not from
+        # its anomalies — a flagged-once user who keeps working still decays
+        # (R6-4). The R12 cold-start floor is RETIRED (C4b): one entity's
+        # event can no longer age another's; absent entities are dormant.
+        if event_clocks and entity_id in event_clocks:
+            ev_dt = _pit(str(event_clocks[entity_id] or ""))
+            if ev_dt is not None and (ent_ref is None or ev_dt > ent_ref)                     and ev_dt <= datetime.now(timezone.utc) + timedelta(hours=1):
+                ent_ref = ev_dt
+        if ent_ref is None:
+            ent_ref = ref_clock
         ent_now = ent_ref.isoformat()
         score.data_clock = ent_now
 
@@ -688,6 +719,15 @@ def compute_risk_scores(
             # information: it contributes nothing this run and is not
             # retained. The run's degradation count records the loss.
             if not anomaly_time:
+                degraded_missing_ts += 1
+                continue
+            # CLOCK-SPEC Rule 2 (round 6): a far-future stamp carries no
+            # defensible time — same treatment as absent. One 2099 line
+            # used to pin the batch clock and zero every other entity's
+            # score (R6-1). Ingestion strips these; this guard covers
+            # anomalies that reached risk without passing ingestion.
+            _at = _pit(str(anomaly_time))
+            if _at is not None and _at > _future_ceiling():
                 degraded_missing_ts += 1
                 continue
             decay = _decay_factor(anomaly_time, half_life_hours, ref=ent_ref)  # N2.2: per-entity
@@ -802,14 +842,18 @@ def compute_risk_scores(
         if entity_id not in entity_anomalies and score.overall > 0:
             # Apply decay since last update
             if score.last_updated:
-                # N2.2: the INACTIVE entity decays against ITS OWN persisted
-                # clock and does NOT advance it — no activity means no
-                # advancement (a dormant score reflects last known activity;
-                # bob's newer batch cannot age alice). The clock advances
-                # only when the entity's own stream does.
+                # CLOCK-SPEC Rule 4 (round 6): present-in-batch entities
+                # decay from their EVENT clock even with zero anomalies
+                # (R6-4); entities with NO events are DORMANT — their score
+                # stands until their own stream returns (the replay guard;
+                # departed-user TTL is roadmap, not silence).
                 own = _pit(str(score.data_clock or "")) if score.data_clock else None
+                if event_clocks and entity_id in event_clocks:
+                    ev_dt = _pit(str(event_clocks[entity_id] or ""))
+                    if ev_dt is not None:
+                        own = ev_dt if own is None else max(own, ev_dt)
                 own_ref = own if own is not None else ref_clock
-                hours = _hours_since_ref(score.last_updated, own_ref)  # N2.2: per-entity
+                hours = _hours_since_ref(score.last_updated, own_ref)  # per-entity
                 decay = 0.5 ** (hours / half_life_hours)
                 score.overall = min(score.overall * decay, _MAX_SCORE)
                 for cat in score.categories:

@@ -115,10 +115,11 @@ class TestPerEntityReferenceClock:
         a = store2.get("alice")
         assert a is not None
         persisted = getattr(a, "data_clock", "")
-        # cold start floors at the dataset's data clock (2026-08-12, the
-        # state file) — R12's synthetic-then-replay guard; the entity's own
-        # stamps then ADVANCE it beyond that
-        assert persisted.startswith("2026-08-12"), (
+        # CLOCK-SPEC Rule 4 (round 6): the R12 cold-start floor is RETIRED
+        # (C4b) — the entity's clock is its OWN newest stamp, never another
+        # entity's data. The synthetic-then-replay guard the floor served
+        # now lives in the data clock's SIEM-only source rule (Rule 3).
+        assert persisted.startswith("2026-08-10"), (
             f"per-entity data_clock not persisted/floored (got {persisted!r}) — N2.2"
         )
 

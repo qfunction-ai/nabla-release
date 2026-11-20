@@ -600,11 +600,13 @@ def detect_anomalies(
                     # quiet, z=0).
                     from nabla.baselines import hourly_rates, family_z_threshold
                     rates = hourly_rates(events, profile)
+                    entity_verdict = False  # R6-5: set on ANY entity-baseline outcome
                     entity_z = None
                     if rates:
                         peak_hour, peak_rate = max(rates.items(), key=lambda kv: kv[1])
                         entity_z = profile.typical_event_count.z_score(peak_rate)
                         fam_sigma = family_z_threshold(entity_z_sigma, len(rates))
+                        entity_verdict = True  # a warm baseline JUDGED the activity
                         # S7: one rate alert per entity per absolute hour —
                         # 5-min batches re-score the cumulative hour, and a
                         # busy hour used to re-alert on every batch in it.
@@ -635,7 +637,8 @@ def detect_anomalies(
                                 "raw_score": round(entity_z, 3),  # N10: calibratable
                                 "entity_baseline": True,
                             })
-                            continue  # Entity baseline handled it, skip batch check
+                    if entity_verdict:
+                        continue  # R6-5: judged by own baseline — alert, deduped, or normal; the batch z-score never re-judges a baselined user
             # Fall back to batch-level z-score (A15: with n users the max
             # achievable z is sqrt(n-1) — below 10 users the 2.0 threshold is
             # unreachable; skip the batch statistic rather than run math that
@@ -889,6 +892,11 @@ def detect_anomalies(
                     peak_rate = max(rates.values()) if rates else None
                     entity_spike = (peak_rate is not None
                                     and peak_rate > profile.typical_event_count.value * spike_mult)
+                    if entity_spike or True:
+                        # R6-5: ANY entity-baseline verdict (spike OR
+                        # normal) ends the judgment — the batch spike
+                        # check below must not re-judge a baselined user
+                        entity_flagged = True
                     if entity_spike:
                         _peak_h = max(rates, key=lambda h: rates[h])
                         _peak_events = [e for e in events

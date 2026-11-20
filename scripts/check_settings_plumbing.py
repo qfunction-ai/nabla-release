@@ -60,6 +60,7 @@ OPERATOR_SET: set[str] = {
     "schedule_log_types", "schedule_log_count",
     # web + auth
     "web_host", "web_port", "jwt_expire_minutes",
+    "forwarded_allow_ips",  # R6-11: X-Forwarded-For trust (nginx fixed IP)
     # risk tuning operators see in the UI
     "risk_score_decay_half_life_hours", "risk_score_investigation_cutoff",
 }

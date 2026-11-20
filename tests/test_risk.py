@@ -226,6 +226,14 @@ class TestComputeRiskScores:
         recent = self._make_anomaly(hours_ago=0, severity="high")
         old = self._make_anomaly(hours_ago=48, severity="high")
         entity_type_map = {"alice": "user"}
+        # CLOCK-SPEC Rule 4 (round 6): an entity's clock comes from its
+        # EVENTS. Both runs simulate a live user whose event stream is at
+        # "now" (the pipeline always passes event_clocks) — the OLD
+        # anomaly's age is real; without the clock it would read age-0
+        # (a fresh entity cannot decay from before it existed).
+        from datetime import datetime, timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
+        ev_clocks = {"alice": now_iso}
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("nabla.config.get_settings") as mock_settings:
@@ -238,6 +246,7 @@ class TestComputeRiskScores:
                 store_recent = compute_risk_scores(
                     anomalies=[recent],
                     entity_type_map=entity_type_map,
+                    event_clocks=ev_clocks,
                 )
                 recent_score = store_recent.get("alice").overall
 
@@ -247,6 +256,7 @@ class TestComputeRiskScores:
                 store_old = compute_risk_scores(
                     anomalies=[old],
                     entity_type_map=entity_type_map,
+                    event_clocks=ev_clocks,
                 )
                 old_score = store_old.get("alice").overall
 
@@ -305,6 +315,8 @@ class TestComputeRiskScores:
 
                 start = datetime.now(timezone.utc)
                 monkeypatch.setattr(risk, "_data_clock", lambda: start)
+                monkeypatch.setattr(risk, "_future_ceiling",
+                                    lambda: start + timedelta(hours=48))
 
                 # First run: score alice, with the anomaly stamped at the
                 # reference instant so its age is exactly zero.
@@ -322,6 +334,8 @@ class TestComputeRiskScores:
                 # the retained seed then decays to half.
                 later = start + timedelta(hours=24)
                 monkeypatch.setattr(risk, "_data_clock", lambda: later)
+                monkeypatch.setattr(risk, "_future_ceiling",
+                                    lambda: later + timedelta(hours=48))
                 advance = self._make_anomaly(severity="low")
                 advance["timestamp"] = later.isoformat()
                 advance["detection_method"] = "later_advance"

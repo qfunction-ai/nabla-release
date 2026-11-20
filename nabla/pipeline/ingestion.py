@@ -217,14 +217,11 @@ def run_ingestion(
                 log_type, ingest_result["count"], ingest_result["normal"], ingest_result["anomalous"],
             )
 
-    # Phase 2 (remediation plan): stable event_id on every ingested entry —
-    # correlation and the Phase 3 label pipeline reference events by ID.
-    import hashlib as _hashlib
-    for e in result.entries:
-        key_material = "|".join(str(e.get(k, "")) for k in (
-            "timestamp", "user", "host", "source_ip", "process", "action",
-            "event_code", "dest_ip",
-        ))
-        e["event_id"] = _hashlib.sha256(key_material.encode()).hexdigest()[:16]
+    # CLOCK-SPEC Rules 0/1/2 (round 6): the single ingestion entry point —
+    # occurrence-safe ids, one parse to UTC, far-future→absent. Replaces
+    # the Phase-2 field-hash stamp (C1: identical-looking events collapsed
+    # to one id, which would have made Rule 6 drop brute-force bursts).
+    from nabla.pipeline.clock_ingestion import normalize_and_validate
+    normalize_and_validate(result.entries, source="pipeline")
 
     return result

@@ -631,7 +631,13 @@ def detect_temporal_chains_with_context(
             anomaly["user"] = sorted(chain.entities["user"])[0]
         if chain.entities.get("ip"):
             anomaly["source_ip"] = sorted(chain.entities["ip"])[0]
-        if chain.start_time:
+        # CLOCK-SPEC Rule 7 (round 6, C7): the chain's timestamp is its
+        # NEWEST member's time — risk decay used to run from the chain's
+        # start, so a long campaign's chain anomaly decayed from its first
+        # step and could go quiet while the attack continued.
+        if chain.end_time:
+            anomaly["timestamp"] = chain.end_time.isoformat()
+        elif chain.start_time:
             anomaly["timestamp"] = chain.start_time.isoformat()
 
         anomalies.append(anomaly)

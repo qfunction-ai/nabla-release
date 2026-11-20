@@ -105,22 +105,36 @@ class TestUserStore:
             store.create("admin_user", "short")
 
     def test_race_guard_first_file_exclusive(self, tmp_path):
-        """Simulate the lost race: file appears between check and create."""
+        """R6-10 (round 6): the lost race does NOT become a second admin.
+
+        The old test asserted the bug — the loser fell through to the
+        locked path and was created. First-registration always carries
+        role='admin' (the default), so a loser reaching the locked path
+        with a non-empty store is a would-be second admin: rejected."""
         from nabla.users import UserStore
 
         path = str(tmp_path / "users.json")
-        # Another "process" creates the initial file after our exists() check
         store = UserStore(path)
         original_exists = os.path.exists
         with patch("nabla.users.os.path.exists", side_effect=lambda p: False if p == path else original_exists(p)):
             os.makedirs(tmp_path, exist_ok=True)
             with open(path, "w") as f:
                 json.dump({"winner": {"username": "winner", "password_hash": "x", "role": "admin"}}, f)
-            # Falls through to locked path; username not taken -> creates fine
-            user = store.create("late_user", "password123")
-            assert user["username"] == "late_user"
-        data = json.load(open(path))
-        assert "winner" in data and "late_user" in data
+            with pytest.raises(PermissionError, match="second admin"):
+                store.create("late_user", "password123")
+
+    def test_race_loser_non_admin_role_still_created(self, tmp_path):
+        """A post-bootstrapped user (role != admin) is unaffected by the
+        R6-10 guard — the lock path still creates ordinary users."""
+        from nabla.users import UserStore
+        import json as J
+        path = str(tmp_path / "users.json")
+        with open(path, "w") as f:
+            J.dump({"admin": {"username": "admin", "password_hash": "x",
+                              "role": "admin"}}, f)
+        store = UserStore(path)
+        user = store.create("analyst", "password123", role="analyst")
+        assert user["username"] == "analyst"
 
 
 # ---------------------------------------------------------------------------

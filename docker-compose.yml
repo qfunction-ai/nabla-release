@@ -133,6 +133,7 @@ services:
       - NABLA_SUMOLOGIC_POLL_TIMEOUT=${NABLA_SUMOLOGIC_POLL_TIMEOUT:-300.0}
       - NABLA_WEB_HOST=${NABLA_WEB_HOST:-0.0.0.0}
       - NABLA_WEB_PORT=${NABLA_WEB_PORT:-8000}
+      - NABLA_FORWARDED_ALLOW_IPS=${NABLA_FORWARDED_ALLOW_IPS:-172.28.0.2}
     volumes:
       - nabla_data:/data
     depends_on:
@@ -152,7 +153,13 @@ services:
       - nabla
     restart: unless-stopped
     networks:
-      - nabla-backend
+      nabla-backend:
+        # R6-11 (round 6): a FIXED address — the backend trusts exactly
+        # this IP for X-Forwarded-For (a dynamic container IP would break
+        # that trust on every restart; the compose network is NOT trusted
+        # because port 8002 is host-published and bridge-gateway requests
+        # from inside it could fake the header)
+        ipv4_address: 172.28.0.2
 
 volumes:
   postgres_data:
@@ -162,5 +169,8 @@ volumes:
 networks:
   # Letta and Nabla can talk to each other
   nabla-backend:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/29
   # Letta and Postgres can talk to each other
   nabla-db:

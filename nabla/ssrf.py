@@ -38,12 +38,40 @@ _PRIVATE_NETWORKS = [
 
 
 def _is_private_ip(ip_str: str) -> bool:
-    """Check if an IP address string falls in a private/reserved range."""
+    """R6-13 (round 6): an address is private/reserved by its ipaddress
+    PROPERTIES, with explicit unwrapping of the IPv4-embedding forms the
+    property checks miss:
+
+    - IPv4-mapped IPv6 (::ffff:169.254.169.254) — .is_private is True on
+      some versions but the old NETWORK-LIST check missed it entirely
+      (verified live: ALLOWED);
+    - NAT64 (64:ff9b::/96) and 6to4 (2002::/16) — embed IPv4; the
+      properties know nothing about the embedded address.
+
+    The hand-written _PRIVATE_NETWORKS list is retired: it missed
+    0.0.0.0/8, 100.64.0.0/10, ::/128, and every embedding form.
+    """
     try:
         addr = ipaddress.ip_address(ip_str)
     except ValueError:
         return False
-    return any(addr in net for net in _PRIVATE_NETWORKS)
+    # Unwrap IPv4-embedding forms to the embedded IPv4 and check THAT
+    if isinstance(addr, ipaddress.IPv6Address):
+        mapped = addr.ipv4_mapped
+        if mapped is not None:
+            addr = mapped
+        elif addr in ipaddress.ip_network("64:ff9b::/96"):  # NAT64
+            embedded = int(addr) & 0xFFFFFFFF
+            addr = ipaddress.IPv4Address(embedded)
+        elif addr in ipaddress.ip_network("2002::/16"):     # 6to4
+            embedded = (int(addr) >> 48) & 0xFFFFFFFF
+            addr = ipaddress.IPv4Address(embedded)
+    # 100.64.0.0/10 (CGNAT/shared address space) has no stdlib property
+    # but reaches local interfaces on many hosts — explicit (R6-13)
+    _cgnat = ipaddress.ip_network("100.64.0.0/10")
+    return (addr.is_private or addr.is_loopback or addr.is_link_local
+            or addr.is_reserved or addr.is_unspecified
+            or addr.is_multicast or addr in _cgnat)
 
 
 def validate_connector_url(url: str) -> tuple[bool, str]:
@@ -74,6 +102,9 @@ def validate_connector_url(url: str) -> tuple[bool, str]:
     # Check for localhost variants
     if hostname in ("localhost", "localhost.localdomain"):
         return False, "localhost is not allowed — use a real hostname"
+    # R6-13: bracketed IPv6 literals ([::ffff:...]) — urlparse's hostname
+    # strips the brackets; the property check below catches the unwrapped
+    # form.
 
     # Check if hostname is a bare IP
     try:
@@ -260,6 +291,14 @@ def validate_redirect_url(redirect_url: str, original_hostname: str) -> tuple[bo
     Returns:
         (is_valid, error_message) — error_message is empty when valid.
     """
+    # Round-6 low: RELATIVE Location headers are legal (RFC 7231) and
+    # resolve against the original host — no new SSRF surface (same host
+    # already validated). Parse the absolute form and continue.
+    if redirect_url.startswith("/") and not redirect_url.startswith("//"):
+        redirect_url = f"https://{original_hostname}{redirect_url}"
+    elif redirect_url.startswith("//"):
+        return False, "protocol-relative redirect blocked (authority change)"
+
     parsed = urlparse(redirect_url)
 
     if parsed.scheme not in ("http", "https"):

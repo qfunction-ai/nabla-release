@@ -301,12 +301,19 @@ async def stream_pipeline(
     """
 
     async def event_generator():
+        # R6-2 (round 6): copy the state under the lock, RELEASE, then
+        # yield. The old generator yielded INSIDE `with _run_lock:` —
+        # while suspended at yield, BaseHTTPMiddleware hands the event
+        # loop to other handlers, any of which touching _run_lock (GET
+        # /status, POST /run) blocked the loop thread, and the generator
+        # could never resume to release: the whole API froze.
         with _run_lock:
-            if not _current_run or _current_run.get("status") != "running":
-                yield f"data: {json.dumps({'type': 'status', 'status': 'idle'})}\n\n"
-                return
+            state = dict(_current_run) if _current_run else {}
+        if state.get("status") != "running":
+            yield f"data: {json.dumps({'type': 'status', 'status': 'idle'})}\n\n"
+            return
 
-            run_id = _current_run["run_id"]
+        run_id = state["run_id"]
 
         yield f"data: {json.dumps({'type': 'status', 'status': 'running', 'run_id': run_id})}\n\n"
 
@@ -314,22 +321,22 @@ async def stream_pipeline(
         while True:
             await asyncio.sleep(1)
             with _run_lock:
-                if _current_run and _current_run.get("run_id") == run_id:
-                    run_status = _current_run.get("status")
-                    current_step = _current_run.get("current_step", "")
-                    if run_status == "running":
-                        yield f"data: {json.dumps({'type': 'progress', 'step': current_step})}\n\n"
-                    elif run_status == "completed":
-                        yield f"data: {json.dumps({'type': 'status', 'status': 'completed', 'run_id': run_id})}\n\n"
-                        break
-                    elif run_status == "failed":
-                        error = _current_run.get("error", "Unknown error")
-                        yield f"data: {json.dumps({'type': 'error', 'error': error})}\n\n"
-                        break
-                    else:
-                        break
-                else:
-                    break
+                state = dict(_current_run) if _current_run else {}
+            if state.get("run_id") != run_id:
+                break
+            run_status = state.get("status")
+            current_step = state.get("current_step", "")
+            if run_status == "running":
+                yield f"data: {json.dumps({'type': 'progress', 'step': current_step})}\n\n"
+            elif run_status == "completed":
+                yield f"data: {json.dumps({'type': 'status', 'status': 'completed', 'run_id': run_id})}\n\n"
+                break
+            elif run_status == "failed":
+                error = state.get("error", "Unknown error")
+                yield f"data: {json.dumps({'type': 'error', 'error': error})}\n\n"
+                break
+            else:
+                break
 
     return StreamingResponse(
         event_generator(),

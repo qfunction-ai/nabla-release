@@ -47,8 +47,11 @@ class TestValidTimestampsPassThrough:
         assert out.startswith("2025-")
         assert parse_iso_timestamp(out) is not None
 
-    def test_empty_returns_now(self):
-        assert parse_iso_timestamp(_normalize_timestamp("")) is not None
+    def test_empty_stays_absent(self):
+        """CLOCK-SPEC Rule 2 (round 6): absent means absent. The old test
+        asserted the R6-14 bug — a wall-clock stamp on missing timestamps
+        moved data clocks during SIEM backfill."""
+        assert _normalize_timestamp("") == ""
 
 
 class TestCorruptionIsCaught:

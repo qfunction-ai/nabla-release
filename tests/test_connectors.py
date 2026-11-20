@@ -345,11 +345,12 @@ def test_sumologic_normalize_timestamp_string():
 
 
 def test_sumologic_normalize_no_timestamp():
-    """Missing timestamp defaults to current time."""
+    """CLOCK-SPEC Rule 2 (round 6): missing timestamp is ABSENT — the old
+    now-default assertion encoded the R6-14 bug."""
     raw = {"user": "admin"}
     result = SumoLogicConnector._minimal_normalize(raw, "auth")
     assert "timestamp" in result
-    assert "202" in result["timestamp"]  # Starts with 202x
+    assert result["timestamp"] == ""
 
 
 def test_sumologic_config_nonexistent_credentials_path():
@@ -371,7 +372,7 @@ def test_sumologic_normalize_windows_event_4624():
         "_raw": json.dumps({
             "event_id": {"id": 4624},
             "system_time": "2026-04-30T19:46:55.789Z",
-            "computer": "WIN-DC01.corp.example",
+            "computer": "EC2AMAZ-OCPNFK9.qfunction.ai",
             "event_data": {
                 "TargetUserName": "admin",
                 "TargetDomainName": "QFUNCTION",
@@ -382,12 +383,12 @@ def test_sumologic_normalize_windows_event_4624():
             "message": "An account was successfully logged on.",
         }),
         "_messagetime": 1777578015000,
-        "_sourceHost": "WIN-DC01",
+        "_sourceHost": "EC2AMAZ-OCPNFK9",
     }
     result = SumoLogicConnector._minimal_normalize(raw, "auth")
     assert result["type"] == "auth"
     assert result["timestamp"] == "2026-04-30T19:46:55.789Z"
-    assert result["host"] == "WIN-DC01"
+    assert result["host"] == "EC2AMAZ-OCPNFK9"
     assert result["user"] == "admin"
     assert result["source_ip"] == "10.0.1.50"
     assert result["action"] == "login"
@@ -426,9 +427,9 @@ def test_sumologic_normalize_windows_event_machine_account():
         "_raw": json.dumps({
             "event_id": {"id": 4634},
             "system_time": "2026-04-30T19:00:00.000Z",
-            "computer": "WIN-DC01.corp.example",
+            "computer": "EC2AMAZ-OCPNFK9.qfunction.ai",
             "event_data": {
-                "TargetUserName": "WIN-DC01$",
+                "TargetUserName": "EC2AMAZ-OCPNFK9$",
                 "TargetDomainName": "QFUNCTION",
             },
             "keywords": ["Audit Success"],
@@ -482,7 +483,7 @@ def test_sumologic_normalize_endpoint_sysmon():
         "_raw": json.dumps({
             "event_id": {"id": 1},
             "system_time": "2026-04-30T19:00:00.000Z",
-            "computer": "WIN-DC01",
+            "computer": "EC2AMAZ-OCPNFK9",
             "event_data": {
                 "Image": "C:\\Windows\\System32\\cmd.exe",
                 "CommandLine": "cmd.exe /c whoami",

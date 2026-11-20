@@ -85,7 +85,11 @@ class TestN3HeldDataSurvivesFPDisposition:
         from nabla.baselines import drain_approved_pending
         applied = drain_approved_pending(store)
         store.save()
-        assert applied == 1, f"approved batch not drained ({applied})"
+        # CLOCK-SPEC Rule 6 / T-1 (round 6): drains apply PER MERGED HOUR —
+        # this hold spans hours 14 and 15, so two complete-hour applications
+        # is the correct count (the old batch-count assertion measured
+        # fragments; a 5-min schedule batch is not an hour)
+        assert applied == 2, f"approved hours not drained ({applied})"
 
         reloaded = EntityProfileStore(str(env / "profiles.json"))
         p = reloaded.get_user("casey")

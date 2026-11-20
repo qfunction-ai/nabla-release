@@ -127,13 +127,17 @@ def run_supervisor(
 
     # Post-processing: if the supervisor contradicts the findings count,
     # prepend a deterministic summary so the user always sees the truth.
+    # Round-6 low: substring matching false-positived on negated uses
+    # ("no findings were false positives" IS a findings claim). The
+    # patterns anchor to sentence starts.
+    import re as _re
     _no_threat_patterns = [
-        "no correlated threats", "no threats detected",
-        "no threats found", "no findings", "clear of",
-        "no acute", "no high-confidence correlated",
+        r"(?<![a-z])no correlated threats", r"(?<![a-z])no threats detected",
+        r"(?<![a-z])no threats found", r"(?<![a-z])no findings(?![a-z ]*(were|are) (false|benign))",
+        r"clear of", r"(?<![a-z])no acute", r"(?<![a-z])no high-confidence correlated",
     ]
     _lower = supervisor_text.lower()
-    _contradicts = any(p in _lower for p in _no_threat_patterns)
+    _contradicts = any(_re.search(p, _lower) for p in _no_threat_patterns)
     if _contradicts:
         logger.warning(
             "Supervisor contradicts findings count (%d): "

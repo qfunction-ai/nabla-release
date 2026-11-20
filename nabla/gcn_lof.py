@@ -429,10 +429,11 @@ class GCNLOFDetector:
     def _bank_zscore(self, raw: "np.ndarray", component: str) -> "np.ndarray":
         """Z-score raw scores against the persisted score bank (A12).
 
-        The bank holds running mean/M2 (Welford) per component across runs;
-        THIS batch updates the bank first (train-on-what-you-score), then
-        scores against pre-update statistics so a uniformly benign batch
-        lands near zero instead of stretching to 1.0.
+        The bank holds running mean/M2 (Welford) per component across runs.
+        Order-of-operations note (round-6 S9 docstring fix): the code
+        updates the bank FIRST and scores against the POST-update
+        statistics — the pre-update claim here was wrong. Inert while
+        GCN-LOF stays disabled (R3/N11); correct it before re-enabling.
         """
         bank = self.score_bank.setdefault(component, {"count": 0, "mean": 0.0, "m2": 0.0})
         # Welford update with this batch's values

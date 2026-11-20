@@ -1121,7 +1121,8 @@ def absorb_absolute_hours(profile, buckets: "dict[str, int]",
         elif hour > (open_hour or ""):
             if open_hour:
                 ewma.update(float(open_count))  # close the finished hour
-                closed.append(open_hour)
+                if open_hour not in closed:
+                    closed.append(open_hour)
                 obs += 1
             open_hour, open_count = hour, buckets[hour]
         elif hour in closed:
@@ -1398,22 +1399,82 @@ def drain_approved_pending(store: "EntityProfileStore") -> int:
     """Pipeline START: apply every approved entity's held batches through
     the normal update_user, inside the caller's load-save window (N3 +
     STRONG 2: ALL approved entities drain — an entity that goes quiet
-    after its FP disposition must not silently lose its verdict)."""
+    after its FP disposition must not silently lose its verdict).
+
+    CLOCK-SPEC Rule 6 / T-1 (round 6): held batches are schedule
+    FRAGMENTS (5 minutes on the live schedule), not hours — observing
+    each as an hour undercounted ~12x. Batches now merge per
+    entity-hour before absorption, and each drain carries a batch ID
+    recorded with the store save so a crash-replay is recognized and
+    skipped (V-4 idempotency lives here, not in Phase 9)."""
     from nabla.persistence import file_lock
     with file_lock(str(_approved_file())):
         apr = _load_approved()
         if not apr:
             return 0
         total = 0
+        from collections import defaultdict as _dd
+        from nabla.pipeline.clock_ingestion import event_hour_key as _ehk
         for entity_id, batches in apr.items():
+            # T-1: merge ALL fragments per hour; skip hours the registry
+            # already observed (data absorbed live before the hold)
+            by_hour: dict[str, list[dict]] = _dd(list)
             for entries in batches:
-                # S6: approved by an analyst disposition — apply regardless
-                # of a same-run re-flag (the flag_quarantine-before-drain
-                # order re-held approved data and discarded the verdict)
-                store.update_user(entity_id, entries, bypass_quarantine=True)
+                for e in entries:
+                    h = _ehk(e)
+                    if h:
+                        by_hour[h].append(e)
+            profile = store.get_or_create_user(entity_id)
+            closed = set(getattr(profile, "closed_hours", None) or [])
+            drained_ids = set(getattr(profile, "_drained_batch_ids", None) or [])
+            batch_id = _drain_batch_id(entity_id, apr)
+            if batch_id in drained_ids:
+                continue  # crash replay: already applied with the store save
+            for h in sorted(by_hour):
+                if h in closed:
+                    continue
+                # S6 + T-1: bypass the hold (analyst verdict), full hour
+                store.update_user(entity_id, by_hour[h], bypass_quarantine=True)
                 total += 1
-        _save_approved({})
+            drained_ids.add(batch_id)
+            try:
+                profile._drained_batch_ids = sorted(drained_ids)[-20:]
+            except Exception:
+                # silent by design: the replay-guard memo is an
+                # optimization; failure to persist it only risks a
+                # harmless re-apply (T-1 sweep 2026-11-20)
+                pass
+        # R6-16 (round 6): the CLEAR moved to the caller's post-save step
+        # (clear_approved_after_save) — the old order cleared approved.json
+        # before the profile store was saved, so a crash between them lost
+        # the analyst's verdict. Drain-batch IDs make the residual window
+        # idempotent.
         return total
+
+
+def clear_approved_after_save() -> int:
+    """R6-16: clear the approved store AFTER the caller saved the profile
+    store. Returns entities cleared."""
+    from nabla.persistence import file_lock
+    with file_lock(str(_approved_file())):
+        apr = _load_approved()
+        n = len(apr)
+        if apr:
+            _save_approved({})
+        return n
+
+
+def _drain_batch_id(entity_id: str, apr: dict) -> str:
+    """A stable ID for this approval set — fingerprint of the batch
+    contents (crash replay after the store was saved but approved.json
+    was not yet cleared re-enters with the same fingerprint)."""
+    import hashlib
+    material = entity_id + "|" + str(sorted(
+        tuple(sorted((str(e.get("event_id", "")), str(e.get("timestamp", "")))
+                     for e in entries))
+        for entries in apr.get(entity_id, [])
+    ))
+    return hashlib.sha256(material.encode()).hexdigest()[:16]
 
 
 def drain_released_pending(store: "EntityProfileStore") -> int:

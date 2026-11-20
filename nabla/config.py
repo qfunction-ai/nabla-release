@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # ── Web server ────────────────────────────────────────────
     web_host: str = "0.0.0.0"
     web_port: int = 8000
+    # R6-11 (round 6): who the backend trusts for X-Forwarded-For —
+    # nginx's fixed compose IP by default; do NOT widen to the network
+    forwarded_allow_ips: str = "172.28.0.2"
 
     # ── Model configuration ───────────────────────────────────
     llm_model: str = "ollama/gemma4:26b"

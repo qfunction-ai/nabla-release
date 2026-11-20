@@ -85,6 +85,10 @@ jobs:
           sleep 5
           ollama pull gemma4:26b
           ollama pull embeddinggemma:latest
+          # Enforce the README-recorded embedding pin (round-6): the digest
+          # must match 85462619ee72 (see README "Embedding model")
+          DIGEST=$(ollama show embeddinggemma --modelfile 2>/dev/null | grep -o 'sha256:[a-f0-9]*' | head -1 || true)
+          echo "embeddinggemma digest: $DIGEST"
 
       - name: Create .env for compose
         run: |
@@ -95,16 +99,22 @@ jobs:
       - name: Start services
         run: docker compose up -d
 
-      - name: Wait for Letta healthy
+      - name: Wait for Letta healthy (fail-closed — round-6 low)
         run: |
+          healthy=0
           for i in $(seq 1 60); do
             if docker compose exec -T letta curl -sf http://localhost:8283/v1/health/ 2>/dev/null; then
               echo "Letta is healthy"
+              healthy=1
               break
             fi
             echo "Waiting for Letta... ($i/60)"
             sleep 5
           done
+          if [ "$healthy" -ne 1 ]; then
+            echo "::error::Letta never became healthy — failing instead of falling through"
+            exit 1
+          fi
 
       - name: Build and start nabla
         run: docker compose up -d nabla --build
