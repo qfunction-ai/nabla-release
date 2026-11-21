@@ -230,6 +230,15 @@ class SplunkConnector:
         else:
             normalized["timestamp"] = ""  # R6-14/CLOCK Rule 2: absent means absent — never "now" (a wall stamp moved the data clock during backfills)
 
+        # N-6/R-8 (round 7): emit the native ID BEFORE dropping the
+        # internals. _cd is unique only WITHIN a bucket, so the composite
+        # _bkt~_cd is the real identity — without it every Splunk event
+        # fell to the field-hash ID and overlapping pulls could not dedup
+        # on the source's own key.
+        bkt, cd = raw.get("_bkt"), raw.get("_cd")
+        if bkt is not None and cd is not None and not normalized.get("event_record_id"):
+            normalized["event_record_id"] = f"{bkt}~{cd}"
+
         # Copy all other fields as-is (user's query already renamed them)
         for key, value in raw.items():
             if key in ("_time", "_raw", "_cd", "_si", "_bkt", "_serial", "splunk_server", "linecount"):

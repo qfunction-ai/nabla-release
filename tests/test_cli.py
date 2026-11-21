@@ -54,13 +54,14 @@ class TestRunLockFile:
 
     @patch("nabla.cli.get_client")
     @patch("nabla.pipeline.run_pipeline")
-    def test_run_creates_and_removes_lock(self, mock_pipeline, mock_get_client):
+    def test_run_creates_and_removes_lock(self, mock_pipeline, mock_get_client, env_data_dir):
         """Lock file is created and cleaned up after a successful run."""
         mock_get_client.return_value = MagicMock()
         mock_pipeline.return_value = {"detect": "ok"}
 
         # Ensure lock doesn't exist
-        lock = "/tmp/nabla-pipeline.lock"
+        from nabla.cli import _lock_file
+        lock = _lock_file()
         if os.path.exists(lock):
             os.unlink(lock)
 
@@ -70,9 +71,10 @@ class TestRunLockFile:
 
     @patch("nabla.cli.get_client")
     @patch("nabla.pipeline.run_pipeline")
-    def test_run_with_existing_lock_fails(self, mock_pipeline, mock_get_client):
+    def test_run_with_existing_lock_fails(self, mock_pipeline, mock_get_client, env_data_dir):
         """Run fails if lock file already exists (concurrent run)."""
-        lock = "/tmp/nabla-pipeline.lock"
+        from nabla.cli import _lock_file
+        lock = _lock_file()
         try:
             with open(lock, "w") as f:
                 f.write("99999\n")
@@ -87,12 +89,13 @@ class TestRunLockFile:
 
     @patch("nabla.cli.get_client")
     @patch("nabla.pipeline.run_pipeline")
-    def test_run_removes_lock_on_failure(self, mock_pipeline, mock_get_client):
+    def test_run_removes_lock_on_failure(self, mock_pipeline, mock_get_client, env_data_dir):
         """Lock file is cleaned up even if the pipeline raises."""
         mock_get_client.return_value = MagicMock()
         mock_pipeline.side_effect = RuntimeError("pipeline exploded")
 
-        lock = "/tmp/nabla-pipeline.lock"
+        from nabla.cli import _lock_file
+        lock = _lock_file()
         if os.path.exists(lock):
             os.unlink(lock)
 
@@ -110,7 +113,7 @@ class TestRunValidation:
 
     @patch("nabla.cli.get_client")
     @patch("nabla.pipeline.run_pipeline")
-    def test_run_file_source_requires_file(self, mock_pipeline, mock_get_client):
+    def test_run_file_source_requires_file(self, mock_pipeline, mock_get_client, env_data_dir):
         """Run with --source=file fails without --file."""
         mock_get_client.return_value = MagicMock()
         # Need to bypass lock file for testing
@@ -129,7 +132,7 @@ class TestRunValidation:
 
     @patch("nabla.cli.get_client")
     @patch("nabla.pipeline.run_pipeline")
-    def test_run_with_column_map(self, mock_pipeline, mock_get_client):
+    def test_run_with_column_map(self, mock_pipeline, mock_get_client, env_data_dir):
         """Run parses --map argument and passes column_map to pipeline."""
         mock_get_client.return_value = MagicMock()
         mock_pipeline.return_value = {"detect": "ok"}

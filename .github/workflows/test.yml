@@ -34,6 +34,11 @@ jobs:
       - name: Settings plumbing guard (N8)
         run: python scripts/check_settings_plumbing.py
 
+      - name: Identity check (R-13 — salted, fail-closed)
+        env:
+          NABLA_IDENTITY_CHECK_SALT: ${{ secrets.NABLA_IDENTITY_CHECK_SALT }}
+        run: python scripts/check_identities.py
+
       - name: Run unit tests
         run: python -m pytest tests/ -v -k "not integration" --tb=short --cov=nabla --cov-report=term-missing --cov-report=xml
 

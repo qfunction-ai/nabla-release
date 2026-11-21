@@ -21,7 +21,7 @@ from pathlib import Path
 
 logger = logging.getLogger("nabla.pipeline.run_guard")
 
-_LOCK_PATH = Path("/tmp/nabla_pipeline.lock")
+_DEFAULT_LOCK_NAME = "nabla_pipeline.lock"
 
 _active: list = []  # at most one guard per process
 
@@ -46,9 +46,16 @@ def acquire_run_guard(path: str | None = None) -> RunGuard:
     """Acquire the run guard or raise RuntimeError (never blocks).
 
     Tests pass a per-tmp path to avoid cross-test interference; the
-    default is the fixed /tmp path shared by scheduler and API.
+    default lives in the settings-resolved data dir (SR-5, round 7 —
+    /tmp was world-writable, cleaner-hostile, and symlink-attackable;
+    the data dir is next to the state it guards).
     """
-    p = Path(path) if path else _LOCK_PATH
+    if path is None:
+        from nabla.config import get_settings
+        p = Path(get_settings().data_dir) / _DEFAULT_LOCK_NAME
+        p.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        p = Path(path)
     fd = open(p, "w")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

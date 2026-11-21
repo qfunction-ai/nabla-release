@@ -372,7 +372,7 @@ def test_sumologic_normalize_windows_event_4624():
         "_raw": json.dumps({
             "event_id": {"id": 4624},
             "system_time": "2026-04-30T19:46:55.789Z",
-            "computer": "EC2AMAZ-OCPNFK9.qfunction.ai",
+            "computer": "WIN-SRV01.example.com",
             "event_data": {
                 "TargetUserName": "admin",
                 "TargetDomainName": "QFUNCTION",
@@ -383,12 +383,12 @@ def test_sumologic_normalize_windows_event_4624():
             "message": "An account was successfully logged on.",
         }),
         "_messagetime": 1777578015000,
-        "_sourceHost": "EC2AMAZ-OCPNFK9",
+        "_sourceHost": "WIN-SRV01",
     }
     result = SumoLogicConnector._minimal_normalize(raw, "auth")
     assert result["type"] == "auth"
     assert result["timestamp"] == "2026-04-30T19:46:55.789Z"
-    assert result["host"] == "EC2AMAZ-OCPNFK9"
+    assert result["host"] == "WIN-SRV01"
     assert result["user"] == "admin"
     assert result["source_ip"] == "10.0.1.50"
     assert result["action"] == "login"
@@ -427,9 +427,9 @@ def test_sumologic_normalize_windows_event_machine_account():
         "_raw": json.dumps({
             "event_id": {"id": 4634},
             "system_time": "2026-04-30T19:00:00.000Z",
-            "computer": "EC2AMAZ-OCPNFK9.qfunction.ai",
+            "computer": "WIN-SRV01.example.com",
             "event_data": {
-                "TargetUserName": "EC2AMAZ-OCPNFK9$",
+                "TargetUserName": "WIN-SRV01$",
                 "TargetDomainName": "QFUNCTION",
             },
             "keywords": ["Audit Success"],
@@ -483,7 +483,7 @@ def test_sumologic_normalize_endpoint_sysmon():
         "_raw": json.dumps({
             "event_id": {"id": 1},
             "system_time": "2026-04-30T19:00:00.000Z",
-            "computer": "EC2AMAZ-OCPNFK9",
+            "computer": "WIN-SRV01",
             "event_data": {
                 "Image": "C:\\Windows\\System32\\cmd.exe",
                 "CommandLine": "cmd.exe /c whoami",

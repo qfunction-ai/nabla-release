@@ -462,10 +462,11 @@ class TestPersistencePermissions:
 class TestCLILockFile:
     """Test that concurrent pipeline runs are prevented."""
 
-    def test_lock_file_prevents_concurrent(self):
+    def test_lock_file_prevents_concurrent(self, env_data_dir):
         """A second run is rejected when a lock file exists."""
         import tempfile
-        lock_path = "/tmp/nabla-pipeline.lock"
+        from nabla.cli import _lock_file
+        lock_path = _lock_file()
         # Create a stale lock file
         with open(lock_path, "w") as f:
             f.write("99999\n")
@@ -479,9 +480,15 @@ class TestCLILockFile:
         finally:
             os.unlink(lock_path)
 
-    def test_lock_file_cleaned_up(self):
+    def test_lock_file_cleaned_up(self, env_data_dir):
         """Lock file is removed after a successful run."""
         # This test would require a full pipeline run, which needs
         # Letta server. Just verify the lock file path is correct.
-        from nabla.cli import _LOCK_FILE
-        assert _LOCK_FILE == "/tmp/nabla-pipeline.lock"
+        # SR-5 (round 7): the lock lives in the settings-resolved data
+        # dir — /tmp was world-writable and cleaner-hostile.
+        from pathlib import Path
+        from nabla.cli import _lock_file
+        from nabla.config import get_settings
+        assert _lock_file() == str(
+            Path(get_settings().data_dir) / "nabla-pipeline.lock")
+        assert not _lock_file().startswith("/tmp")

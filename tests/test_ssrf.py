@@ -262,3 +262,26 @@ class TestValidateRedirectUrl:
             "api.sumologic.com",
         )
         assert "api.sumologic.com" in err
+
+    def test_relative_redirect_carries_original_scheme(self):
+        """Round-7 low: the relative-URL rebuild uses the ORIGINAL
+        request's scheme, not a hardcoded https — an http-only origin
+        must validate its own redirect (behavioral half)."""
+        from unittest.mock import patch
+        from nabla.ssrf import validate_redirect_url
+        fake = [(None, None, None, "", ("93.184.216.34", 0))]
+        with patch("socket.getaddrinfo", return_value=fake):
+            ok, err = validate_redirect_url("/login?next=x", "api.example.com",
+                                            original_scheme="http")
+        assert ok, err
+
+    def test_no_hardcoded_scheme_rebuild(self):
+        """Source-level half: no `f"https://{...}` rebuild remains in
+        ssrf.py, and the caller threads response.url.scheme through."""
+        from pathlib import Path
+        import nabla.ssrf as ssrf_mod
+        src = Path(ssrf_mod.__file__).read_text()
+        assert 'f"https://{original_hostname}' not in src, (
+            "the relative-redirect rebuild hardcodes https again")
+        assert "original_scheme=original_scheme" in src, (
+            "the caller stopped threading the original scheme")

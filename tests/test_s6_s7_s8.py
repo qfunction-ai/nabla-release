@@ -63,9 +63,10 @@ class TestS6ApprovedDrain:
         store2.save()
         store3 = EntityProfileStore(str(prof))
         ewma_after = store3.users["dave"].typical_event_count.n
-        assert drained == 1
+        drained_batches = sum(len(v) for v in drained.values())
+        assert drained_batches == 1
         assert ewma_after > ewma_before, (
-            f"S6: approved batch drained ({drained}) but EWMA observations "
+            f"S6: approved batch drained ({drained_batches}) but EWMA observations "
             f"{ewma_before}→{ewma_after} — the data never reached the baseline")
 
     def test_live_batches_still_respect_holds(self):

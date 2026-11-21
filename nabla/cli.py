@@ -11,8 +11,19 @@ from nabla.log import get_logger
 
 logger = get_logger("cli")
 
-# Lock file to prevent concurrent pipeline runs
-_LOCK_FILE = "/tmp/nabla-pipeline.lock"
+_CLI_LOCK_NAME = "nabla-pipeline.lock"
+
+
+def _lock_file() -> str:
+    """SR-5 (round 7): the CLI invocation lock lives in the
+    settings-resolved data dir — /tmp was world-writable,
+    cleaner-hostile, and symlink-attackable. Resolved per call so
+    tests (and NABLA_DATA_DIR) see the same dir the run uses."""
+    from nabla.config import get_settings
+    from pathlib import Path as _P
+    p = _P(get_settings().data_dir) / _CLI_LOCK_NAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    return str(p)
 
 app = typer.Typer(help="Nabla — UEBA multi-agent system on Letta API")
 
@@ -57,26 +68,27 @@ def run(
     # Prevent concurrent pipeline runs. Stale locks (age > 15 min, e.g. a
     # timeout-killed run) are removed with an audit line; --force clears
     # any lock explicitly. (silent-swallow sweep: lock expiry)
+    lock_path = _lock_file()
     lock_acquired = False
     while not lock_acquired:
         try:
-            lock_fd = os.open(_LOCK_FILE, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
             os.write(lock_fd, f"{os.getpid()}\n".encode())
             lock_acquired = True
         except FileExistsError:
-            age_s = time.time() - os.path.getmtime(_LOCK_FILE)
+            age_s = time.time() - os.path.getmtime(lock_path)
             if force or age_s > 900:  # 15 minutes
                 how = "--force" if force else f"stale ({int(age_s)}s old)"
                 logger.warning("Removing pipeline lock (%s)", how)
                 typer.echo(f"  Removing pipeline lock ({how}).", err=True)
                 try:
-                    os.unlink(_LOCK_FILE)
+                    os.unlink(lock_path)
                 except FileNotFoundError:
                     pass  # silent by design: raced another remover (2026-09 sweep)
                 continue
             typer.echo(
                 "Error: Another pipeline run is already in progress. "
-                "If this is stale, remove /tmp/nabla-pipeline.lock or use --force.",
+                f"If this is stale, remove {lock_path} or use --force.",
                 err=True,
             )
             raise typer.Exit(1)
@@ -130,7 +142,7 @@ def run(
                 typer.echo("  (run predates layer counts)")
     finally:
         os.close(lock_fd)
-        os.unlink(_LOCK_FILE)
+        os.unlink(lock_path)
 
 
 @app.command()
@@ -998,6 +1010,66 @@ def _landed_chunks() -> set[str]:
     return landed
 
 
+def _split_large_file(f: str, chunk_size: int) -> list[str]:
+    """Split an oversized ingest file into whole-hour chunk files.
+
+    Cut at the LAST hour boundary at-or-before the cap (N-2/V-2, round
+    7): file absorption batch-end-closes every hour in the chunk, so a
+    chunk cut mid-hour would observe the partial hour as complete and
+    EXCLUDE the remainder in the next chunk ("already observed").
+    Sorted input (SIEM exports, course day-files) makes hour changes
+    monotone; a single hour denser than the cap hard-cuts mid-hour
+    (unavoidable); a dense hour just under the cap can push the NEXT
+    chunk over it by that hour's tail — bounded, and whole-hour.
+
+    Returns the chunk file paths (caller deletes them).
+    """
+    sub_files: list[str] = []
+    base_noext = f.rsplit(".", 1)[0]
+    with open(f) as src:
+        idx = 0
+        import json as _j
+
+        def _hr(line: str) -> str:
+            # N-7 (round 7): the parsed UTC hour (Rule 5's single
+            # derivation), not a raw [:13] prefix — an offset-stamped
+            # file would otherwise cut chunks on LOCAL hour lines
+            # (R6-6's disease, resurrected in the chunker).
+            try:
+                from nabla.pipeline.clock_ingestion import event_hour_key
+                return event_hour_key(_j.loads(line))
+            except Exception:
+                return ""
+
+        pending: list[str] = []
+        while True:
+            lines = pending + [src.readline() for _ in range(chunk_size)]
+            pending = []
+            lines = [l for l in lines if l]
+            if not lines:
+                break
+            # >= not >: the FIRST pass reads exactly cap lines — a
+            # strict > guard makes the boundary cut inert there and
+            # every first chunk cuts mid-hour (the exact disease this
+            # cut exists to prevent).
+            if len(lines) >= chunk_size:
+                cut = len(lines)
+                boundary_hour = _hr(lines[-1])
+                for i in range(len(lines) - 2, -1, -1):
+                    if _hr(lines[i]) != boundary_hour:
+                        cut = i + 1
+                        break
+                if 0 < cut < len(lines):
+                    pending = lines[cut:]
+                    lines = lines[:cut]
+            sub = f"{base_noext}.part{idx:03d}.jsonl"
+            with open(sub, "w") as out:
+                out.writelines(lines)
+            sub_files.append(sub)
+            idx += 1
+    return sub_files
+
+
 @app.command(name="ingest")
 def ingest(
     path: str = typer.Argument(..., help="Dataset directory or single JSONL file"),
@@ -1058,20 +1130,7 @@ def ingest(
         n_events = sum(1 for _ in open(f))
         sub_files = [f]
         if n_events > chunk_size:
-            sub_files = []
-            base_noext = f.rsplit(".", 1)[0]
-            with open(f) as src:
-                idx = 0
-                while True:
-                    lines = [src.readline() for _ in range(chunk_size)]
-                    lines = [l for l in lines if l]
-                    if not lines:
-                        break
-                    sub = f"{base_noext}.part{idx:03d}.jsonl"
-                    with open(sub, "w") as out:
-                        out.writelines(lines)
-                    sub_files.append(sub)
-                    idx += 1
+            sub_files = _split_large_file(f, chunk_size)
             typer.echo(f"  {name}: {n_events} events → {len(sub_files)} chunks (cap {chunk_size})")
 
         for sub in sub_files:

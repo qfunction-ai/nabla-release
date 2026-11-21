@@ -210,9 +210,14 @@ def follow_redirects_safe(
         if not location:
             return response
 
-        # Validate redirect target against SSRF rules
+        # Validate redirect target against SSRF rules. Round-7 low: the
+        # relative-URL branch rebuilds the absolute form with the
+        # ORIGINAL request's scheme — hardcoding https would turn an
+        # http-only internal service into a failed redirect follow.
         if original_hostname:
-            is_valid, err = validate_redirect_url(location, original_hostname)
+            original_scheme = str(response.url.scheme) if response.url else "https"
+            is_valid, err = validate_redirect_url(location, original_hostname,
+                                                  original_scheme=original_scheme)
             if not is_valid:
                 raise ValueError(f"{caller_name} redirect blocked: {err}")
 
@@ -278,7 +283,8 @@ def follow_get_redirects_safe(
     return resp
 
 
-def validate_redirect_url(redirect_url: str, original_hostname: str) -> tuple[bool, str]:
+def validate_redirect_url(redirect_url: str, original_hostname: str,
+                          original_scheme: str = "https") -> tuple[bool, str]:
     """Validate a redirect URL against SSRF rules.
 
     Prevents redirect-based SSRF where the initial request goes to a
@@ -293,9 +299,10 @@ def validate_redirect_url(redirect_url: str, original_hostname: str) -> tuple[bo
     """
     # Round-6 low: RELATIVE Location headers are legal (RFC 7231) and
     # resolve against the original host — no new SSRF surface (same host
-    # already validated). Parse the absolute form and continue.
+    # already validated). Parse the absolute form and continue — with the
+    # ORIGINAL scheme (round-7 low: https was hardcoded).
     if redirect_url.startswith("/") and not redirect_url.startswith("//"):
-        redirect_url = f"https://{original_hostname}{redirect_url}"
+        redirect_url = f"{original_scheme}://{original_hostname}{redirect_url}"
     elif redirect_url.startswith("//"):
         return False, "protocol-relative redirect blocked (authority change)"
 

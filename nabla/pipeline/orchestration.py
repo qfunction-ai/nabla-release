@@ -297,6 +297,19 @@ def _run_pipeline_body(
         # Update entity profiles (skip for ad-hoc file uploads)
         if detection.entity_profiles is not None and not skip_baseline:
             try:
+                # N-2 (round 7): advance this source's watermark IN MEMORY
+                # first — the update loop and the sweep close hours against
+                # it. R-17: it persists only AFTER the profile save (a
+                # crash then leaves profile-behind-watermark, which the
+                # idempotent close absorbs on replay — the harmless side).
+                from nabla.pipeline.watermark import newest_event_ts
+                from nabla.system_state import advance_source_watermark
+                advance_source_watermark(
+                    detection.sys_state, ingestion.effective_source,
+                    newest_event_ts(ingestion.entries))
+                from nabla.system_state import source_watermarks_view
+                _src_wm = source_watermarks_view(detection.sys_state).get(
+                    ingestion.effective_source, "")
                 # N3 (round 4) + STRONG 2: drain approved batches FIRST, at
                 # pipeline start, for ALL approved entities — inside this
                 # load-save window (the API path never writes profiles; it
@@ -305,26 +318,48 @@ def _run_pipeline_body(
                 # expiry means "review window elapsed, treat as normal").
                 from nabla.baselines import drain_approved_pending, drain_released_pending
                 approved = drain_approved_pending(detection.entity_profiles)
-                ttl_applied = drain_released_pending(detection.entity_profiles)
-                # R6-16: clear AFTER the store save below (the profile
-                # save happens in this run's persistence step) — the
-                # drain-batch IDs make any crash window idempotent
-                from nabla.baselines import clear_approved_after_save
-                _cleared = clear_approved_after_save()
-                if approved or ttl_applied or _cleared:
+                ttl_released, ttl_holds = drain_released_pending(detection.entity_profiles)
+                if approved or ttl_released:
                     logger.info(
-                        "Quarantine drain: %d approved batches applied, %d TTL-released, %d entities cleared post-save",
-                        approved, ttl_applied, _cleared)
+                        "Quarantine drain: %d approved batches, %d TTL-released (commit deferred to post-save)",
+                        sum(len(v) for v in approved.values()),
+                        sum(len(v) for v in ttl_released.values()))
                 from nabla.baselines import group_entries_by_entity
                 groups = group_entries_by_entity(ingestion.entries)
                 for (entity_type, entity_id), group_entries in groups.items():
                     if entity_type == "user":
-                        detection.entity_profiles.update_user(entity_id, group_entries)
+                        detection.entity_profiles.update_user(
+                            entity_id, group_entries,
+                            source_kind=ingestion.effective_source,
+                            watermark=_src_wm)
                     elif entity_type == "host":
                         detection.entity_profiles.update_host(entity_id, group_entries)
                     elif entity_type == "ip":
                         detection.entity_profiles.update_ip(entity_id, group_entries)
+                # R-16 (round 7): end-of-run close sweep — quiet entities'
+                # finished hours close against their own source's watermark
+                # (recorded like live closes, never treated as late).
+                # Runs BEFORE the save (R-17).
+                from nabla.baselines import sweep_profile_hours
+                swept = sweep_profile_hours(
+                    detection.entity_profiles, detection.sys_state)
+                if swept:
+                    logger.info("Clock sweep: %d quiet-entity hours closed",
+                                swept)
                 detection.entity_profiles.save()
+                # R6-16 + R-11 + R-3 (round 7): commit the drains AFTER
+                # the profile save — the save is what makes the drained
+                # batch IDs durable, so a crash before the commit replays
+                # as a no-op instead of losing the verdict. SELECTIVE:
+                # only the drained batches are removed; a verdict that
+                # arrived mid-run survives for the next run.
+                from nabla.baselines import commit_drain_after_save
+                commit_drain_after_save(approved, ttl_released, ttl_holds)
+                # R-17 (round 7): the watermark persists AFTER the profile
+                # save — the save is what makes the closed hours durable.
+                from nabla.system_state import save_source_watermarks
+                save_source_watermarks(
+                    settings.system_state_file, detection.sys_state)
                 logger.info(
                     "Entity profiles updated: %d users, %d hosts, %d IPs",
                     len(detection.entity_profiles.users), len(detection.entity_profiles.hosts), len(detection.entity_profiles.ips),

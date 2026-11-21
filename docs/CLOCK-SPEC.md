@@ -1,6 +1,6 @@
 # The Nabla Clock Specification
 
-**Status:** Draft v6 — fifth pass complete. V-1 applied (re-open close is measured on the WATERMARK's value, not wall time — the last clock ambiguity). V-2..V-5 folded as implementation-time items: hour-aligned backfill/file hours close at batch end (V-2 — the watermark never moves during a backfill-only bootstrap), migration initializes per-source watermarks and the per-hour open map (V-3). Reviewer recommendation: APPROVE with V-1. Requires Ryan approval BEFORE implementation.
+**Status:** Approved and implemented (round 6). The five-pass review arc (C→S→T→U→V) closed with V-1 (re-open close is measured on the WATERMARK's value, not wall time); V-2..V-5 landed as implementation-time items: hour-aligned backfill/file hours close at batch end (V-2 — the watermark never moves during a backfill-only bootstrap), migration initializes per-source watermarks and the per-hour open map (V-3). Round 7 (N-2) made the Rule 6 engine stateful — the stateless reference absorbed per batch would have undercounted 12x on every live batch.
 **Date:** 2026-11-20. v1: 7 rules. v2: Rule 0, watermark Rule 6, clamps, naive-stamp tz, host attribution, derived anomalies, allowlists, migration. v3: S-pass (per-source watermarks, semantics, repair, far-future→absent, multi-open-hour). v4: T-pass. v5: U-pass. v6: V-pass (V-1 watermark-domain close wording; V-2 batch-end close for hour-aligned/file hours; V-3 migration initialization).
 
 ## Scope

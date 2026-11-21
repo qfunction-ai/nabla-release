@@ -213,8 +213,9 @@ def _detect_volume_anomaly(
         _nr = _rates[_peak_h]
         z = ewma.z_score(_nr)
         if z > family_z_threshold(sigma, len(_rates)):
+            from nabla.pipeline.clock_ingestion import event_hour_key
             _peak_events = [e for e in user_net
-                            if (e.get("timestamp", "") or "")[:13] == _peak_h] or user_net
+                            if event_hour_key(e) == _peak_h] or user_net
             anomalies.append({
                 "entity": user,
                 "entity_type": "user",

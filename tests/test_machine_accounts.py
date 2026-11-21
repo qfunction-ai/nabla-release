@@ -6,7 +6,7 @@ not an anomaly. Scoring them produces incidents that are always wrong, and
 those incidents bury the ones that matter.
 
 This is not a corner case. The real dataset-v1 has 13 machine principals to
-a single human analyst, so the off-hours detector was firing on almost
+one human (`helpdeskone`), so the off-hours detector was firing on almost
 entirely the wrong population.
 """
 
@@ -21,7 +21,7 @@ class TestStructuralRules:
     """Unambiguous markers — no guessing involved."""
 
     @pytest.mark.parametrize("name", [
-        "EC2AMAZ-OCPNFK9$", "EC2AMAZ-5VH33S7$", "WORKSTATION01$", "DC01$",
+        "WIN-SRV01$", "WIN-SRV02$", "WORKSTATION01$", "DC01$",
     ])
     def test_windows_machine_accounts(self, name):
         assert is_machine_account(name)
@@ -62,7 +62,7 @@ class TestHumansAreNotCaught:
     Excluding a real analyst from baselining silently blinds the product."""
 
     @pytest.mark.parametrize("name", [
-        "jdoe2", "pat.smith", "johnson", "smith", "brown", "williams",
+        "helpdeskone", "rsmith", "johnson", "smith", "brown", "williams",
         "a.patel", "maria.garcia", "jdoe", "admin", "administrator",
         "service.desk", "rootcause", "sven", "bintou",
     ])
@@ -100,7 +100,7 @@ class TestOverrides:
         self._settings(monkeypatch, machine_accounts="custom-bot,other-svc")
         assert is_baselineable_user("custom-bot") is False
         assert is_baselineable_user("other-svc") is False
-        assert is_baselineable_user("jdoe2") is True
+        assert is_baselineable_user("helpdeskone") is True
 
     def test_human_override_rescues_a_false_positive(self, monkeypatch):
         """An operator who knows `ftp` is a person at their site should not
@@ -115,15 +115,15 @@ class TestOverrides:
         assert is_baselineable_user("alice") is True
 
 
-class TestRepresentativePopulation:
-    """The predicate against a representative enterprise principal list.
+class TestRealDatasetPopulation:
+    """The predicate against the actual dataset-v1 principal list.
 
     This is the regression that matters: exactly one of these is a person.
     """
 
     DATASET_PRINCIPALS = {
-        "root": False, "EC2AMAZ-OCPNFK9$": False, "-": False, "adm": False,
-        "EC2AMAZ-5VH33S7$": False, "jdoe2": True, "SYSTEM": False,
+        "root": False, "WIN-SRV01$": False, "-": False, "adm": False,
+        "WIN-SRV02$": False, "helpdeskone": True, "SYSTEM": False,
         "bin": False, "mail": False, "ftp": False, "ec2-user": False,
         "games": False, "daemon": False, "tss": False,
     }
@@ -138,4 +138,4 @@ class TestRepresentativePopulation:
 
     def test_exactly_one_human_in_the_dataset(self):
         humans = [n for n in self.DATASET_PRINCIPALS if is_baselineable_user(n)]
-        assert humans == ["jdoe2"]
+        assert humans == ["helpdeskone"]

@@ -207,6 +207,21 @@ def record_ingestion(
 
     parsed = [parse_iso_timestamp(str(ts)) for ts in (entry_timestamps or [])]
     parsed = [p for p in parsed if p is not None]
+    # N-5 (round 7): the Rule 2 ceiling INSIDE the span tracker. The CLI
+    # feeds RAW file timestamps here (its own scan bypasses
+    # normalize_and_validate), and the tracker used to take max() with
+    # no bound — one 2099 stamp in a file poisoned data_newest_ts (and
+    # with it the __legacy__ watermark view). R6-1's disease, resurrected
+    # through the CLI path; the ceiling belongs where the data lands.
+    from nabla.pipeline.clock_ingestion import future_ceiling
+    ceiling = future_ceiling()
+    poisoned = [p for p in parsed if p > ceiling]
+    if poisoned:
+        logger.warning(
+            "span tracker: dropped %d future-stamped events past the "
+            "Rule 2 ceiling (newest offender %s)",
+            len(poisoned), max(poisoned).isoformat())
+    parsed = [p for p in parsed if p <= ceiling]
     if parsed:
         batch_oldest = min(parsed).isoformat()
         batch_newest = max(parsed).isoformat()
@@ -224,6 +239,48 @@ def record_ingestion(
             state.get("data_oldest_ts", "?")[:10], state.get("data_newest_ts", "?")[:10],
         )
     return state
+
+
+def advance_source_watermark(state: dict[str, Any], source: str,
+                             newest_ts: str) -> dict[str, Any]:
+    """N-2 (round 7): advance this source's watermark, monotone (never
+    moves backwards). Mutates the IN-MEMORY state dict; the caller
+    persists it AFTER the profile store save (R-17 order — a crash can
+    then only leave the harmless profile-behind-watermark state, which
+    the registry's idempotent close absorbs)."""
+    if not source or not newest_ts:
+        return state
+    wms: dict[str, str] = dict(state.get("source_watermarks") or {})
+    prev = wms.get(source) or ""
+    from nabla.utils import parse_iso_timestamp
+    prev_dt = parse_iso_timestamp(prev) if prev else None
+    new_dt = parse_iso_timestamp(newest_ts)
+    if new_dt is not None and (prev_dt is None or new_dt > prev_dt):
+        wms[source] = newest_ts
+        state["source_watermarks"] = wms
+    return state
+
+
+def source_watermarks_view(state: dict[str, Any]) -> dict[str, str]:
+    """The per-source watermarks plus the reserved __legacy__ view (the
+    migrated single-accumulator hours close against the data clock —
+    any real-SIEM batch advances it)."""
+    from nabla.pipeline.watermark import LEGACY_SOURCE
+    view = {k: str(v or "") for k, v in (state.get("source_watermarks") or {}).items()}
+    view[LEGACY_SOURCE] = str(state.get("data_newest_ts") or "")
+    return view
+
+
+def save_source_watermarks(path: str, state: dict[str, Any]) -> None:
+    """R-17: persist ONLY the source watermarks into the state file,
+    read-modify-write (the pipeline holds the run lock; the API path
+    never writes system state). Called after the profile store save."""
+    wms = state.get("source_watermarks")
+    if not wms:
+        return
+    current = load_system_state(path)
+    current["source_watermarks"] = wms
+    save_system_state(path, current)
 
 
 def _baseline_span_days(state: dict[str, Any]) -> float | None:

@@ -85,11 +85,11 @@ class TestN3HeldDataSurvivesFPDisposition:
         from nabla.baselines import drain_approved_pending
         applied = drain_approved_pending(store)
         store.save()
-        # CLOCK-SPEC Rule 6 / T-1 (round 6): drains apply PER MERGED HOUR —
-        # this hold spans hours 14 and 15, so two complete-hour applications
-        # is the correct count (the old batch-count assertion measured
-        # fragments; a 5-min schedule batch is not an hour)
-        assert applied == 2, f"approved hours not drained ({applied})"
+        # R-4 (round 7): the drain returns per-batch uids; the batch spans
+        # hours 14 and 15, which merge into two complete-hour applications
+        # inside the profile (asserted below via the histogram)
+        assert sum(len(v) for v in applied.values()) == 1, (
+            f"approved batch not drained ({applied})")
 
         reloaded = EntityProfileStore(str(env / "profiles.json"))
         p = reloaded.get_user("casey")
@@ -113,8 +113,8 @@ class TestN3HeldDataSurvivesFPDisposition:
         store = EntityProfileStore(str(env / "profiles.json"))
         applied = drain_approved_pending(store)  # no activity for dana — still drains
         store.save()
-        assert applied == 2, (
-            f"drain skipped a quiet entity ({applied}/2) — the verdict leaks (STRONG 2)"
+        assert len(applied) == 2, (
+            f"drain skipped a quiet entity ({len(applied)}/2) — the verdict leaks (STRONG 2)"
         )
 
     def test_pending_cap_is_span_and_count_based(self, env):
@@ -122,6 +122,7 @@ class TestN3HeldDataSurvivesFPDisposition:
         hold lasts 7 days. The cap becomes 7 data-clock days or 5,000
         events per entity, whichever first."""
         from nabla.baselines import flag_quarantine, hold_pending, _load_pending
+        from nabla.baselines import _batch_entries
         flag_quarantine(["casey"])
         # six SMALL batches in one hour — all must survive (old cap: 5)
         for i in range(6):
@@ -134,7 +135,7 @@ class TestN3HeldDataSurvivesFPDisposition:
         old = _entries([3], day=1, per_hour=4)
         hold_pending("casey", old)
         pend = _load_pending()
-        stamps = [e["timestamp"] for b in pend["casey"] for e in b]
+        stamps = [e["timestamp"] for b in pend["casey"] for e in _batch_entries(b)]
         assert all(s >= "2026-08-08" for s in stamps), (
             "span cap did not drop a >7-day-old batch (7 data-clock-day span)"
         )
@@ -209,7 +210,8 @@ class TestN5QuarantineTrigger:
         """Final-review REQUIRED 1: a no-disposition TTL expiry treats held
         data as normal (release AND apply) — the self-healing choice."""
         from nabla.baselines import (flag_quarantine, hold_pending, _is_quarantined,
-                                     EntityProfileStore, drain_released_pending)
+                                     EntityProfileStore, drain_released_pending,
+                                     commit_drain_after_save)
         import nabla.baselines as B
 
         state = {"phase": "detection", "data_newest_ts": "2026-08-10T00:00:00+00:00"}
@@ -224,9 +226,11 @@ class TestN5QuarantineTrigger:
         assert _is_quarantined("riley") is False
 
         store = EntityProfileStore(str(env / "profiles.json"))
-        applied = drain_released_pending(store)
+        released, holds = drain_released_pending(store)
         store.save()
-        assert applied >= 1, "TTL expiry did not route held data to apply (REQUIRED 1: APPLY)"
+        commit_drain_after_save(None, released, holds)
+        assert sum(len(v) for v in released.values()) >= 1, (
+            "TTL expiry did not route held data to apply (REQUIRED 1: APPLY)")
         re = EntityProfileStore(str(env / "profiles.json"))
         assert re.get_user("riley").observation_count >= 1
 

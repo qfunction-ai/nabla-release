@@ -296,8 +296,11 @@ def _hours_since(timestamp: str) -> float:
 
 
 def _future_ceiling() -> datetime:
-    """Rule 2's wall+1h validation ceiling (patchable for simulated time)."""
-    return datetime.now(timezone.utc) + timedelta(hours=1)
+    """Rule 2's wall+1h validation ceiling (patchable for simulated time —
+    tests monkeypatch THIS name; the definition lives in clock_ingestion
+    so every consumer shares one bound)."""
+    from nabla.pipeline.clock_ingestion import future_ceiling
+    return future_ceiling()
 
 
 def _data_clock() -> datetime:
@@ -669,7 +672,7 @@ def compute_risk_scores(
         # event can no longer age another's; absent entities are dormant.
         if event_clocks and entity_id in event_clocks:
             ev_dt = _pit(str(event_clocks[entity_id] or ""))
-            if ev_dt is not None and (ent_ref is None or ev_dt > ent_ref)                     and ev_dt <= datetime.now(timezone.utc) + timedelta(hours=1):
+            if ev_dt is not None and (ent_ref is None or ev_dt > ent_ref) and ev_dt <= _future_ceiling():
                 ent_ref = ev_dt
         if ent_ref is None:
             ent_ref = ref_clock
@@ -836,44 +839,78 @@ def compute_risk_scores(
         if len(score.score_history) > 24:
             score.score_history = score.score_history[-24:]
 
-    # Decay inactive entities: entities that had scores but no new anomalies
-    # this run should have their scores decay over time
+    # Decay inactive entities (N-1, round 7): entities with scores but no
+    # new anomalies this run. The score is RECOMPUTED from the retained
+    # anomalies' base_contribution x decay against the entity's own
+    # reference — the same formula as the active branch above. The old
+    # branch multiplied the already-decayed overall by a decay measured
+    # from a last_updated that never advanced: every quiet batch re-decayed
+    # the whole elapsed span, compounding (measured: a critical finding
+    # reached 0.0000 after 25h of quiet 5-minute batches where the closed
+    # form gives ~3.6 — a compromised account that keeps working lost its
+    # risk in about five hours).
     for entity_id, score in store.scores.items():
         if entity_id not in entity_anomalies and score.overall > 0:
-            # Apply decay since last update
-            if score.last_updated:
-                # CLOCK-SPEC Rule 4 (round 6): present-in-batch entities
-                # decay from their EVENT clock even with zero anomalies
-                # (R6-4); entities with NO events are DORMANT — their score
-                # stands until their own stream returns (the replay guard;
-                # departed-user TTL is roadmap, not silence).
-                own = _pit(str(score.data_clock or "")) if score.data_clock else None
-                if event_clocks and entity_id in event_clocks:
-                    ev_dt = _pit(str(event_clocks[entity_id] or ""))
-                    if ev_dt is not None:
-                        own = ev_dt if own is None else max(own, ev_dt)
-                own_ref = own if own is not None else ref_clock
-                hours = _hours_since_ref(score.last_updated, own_ref)  # per-entity
-                decay = 0.5 ** (hours / half_life_hours)
-                score.overall = min(score.overall * decay, _MAX_SCORE)
-                for cat in score.categories:
-                    score.categories[cat] = min(score.categories[cat] * decay, _MAX_SCORE)
-                # R2: refresh the retained survivors' displayed contributions
-                # from base against the current reference (inactive entities
-                # keep accurate per-anomaly decay, not just the overall score)
-                # N2.3: empty-ts entries are zombies — dropped, not refreshed
-                # (the `else 1.0` guard kept them at full weight forever).
-                survivors_active: list[dict] = []
-                for a in score.contributing_anomalies:
-                    ts_a = a.get("timestamp", "")
-                    if not ts_a:
-                        continue
-                    base_a = a.get("base_contribution", a.get("contribution", 0.0))
-                    d_a = _decay_factor(ts_a, half_life_hours, ref=own_ref)  # N2.2: per-entity
-                    a["contribution"] = round(base_a * d_a, 3)
-                    survivors_active.append(a)
-                score.contributing_anomalies = survivors_active
-                score.trend = -score.overall * (1 - decay) / max(hours, 0.1)
+            # CLOCK-SPEC Rule 4: the reference is the entity's OWN clock —
+            # its persisted data_clock, advanced by this batch's events if
+            # the entity is present (R6-4). Dormant entities (no events this
+            # batch) recompute against their own persisted clock, which
+            # never moves: their score stands until their stream returns
+            # (the replay guard; departed-user TTL is roadmap, not silence).
+            own = _pit(str(score.data_clock or "")) if score.data_clock else None
+            if event_clocks and entity_id in event_clocks:
+                ev_dt = _pit(str(event_clocks[entity_id] or ""))
+                if ev_dt is not None:
+                    own = ev_dt if own is None else max(own, ev_dt)
+            # Legacy score with neither data_clock nor events: fall back to
+            # the batch reference ONCE (stamped below so subsequent passes
+            # own their clock — one-shot legacy transition, then dormant).
+            own_ref = own if own is not None else ref_clock
+            prev_overall = score.overall
+            hours = _hours_since_ref(score.last_updated, own_ref) if score.last_updated else 0.0
+
+            # Recompute from the retained survivors — the active branch's
+            # formula: base x decay against own_ref, pruned below 0.05,
+            # summed into categories (÷ n_cats), overall = max of
+            # categories. Recompute-from-base cannot compound: each pass
+            # derives from the undecayed base, not the decayed result.
+            # N2.3: empty-ts entries are zombies — dropped, not refreshed
+            # (the `else 1.0` guard kept them at full weight forever).
+            new_categories: dict[str, float] = dict.fromkeys(THREAT_CATEGORIES, 0.0)
+            survivors_active: list[dict] = []
+            for a in score.contributing_anomalies:
+                ts_a = a.get("timestamp", "")
+                if not ts_a:
+                    continue
+                base_a = a.get("base_contribution", a.get("contribution", 0.0))
+                d_a = _decay_factor(ts_a, half_life_hours, ref=own_ref)
+                contribution_a = base_a * d_a
+                if contribution_a < 0.05:
+                    continue  # prune negligible (matches the active branch)
+                a["base_contribution"] = round(base_a, 3)
+                a["contribution"] = round(contribution_a, 3)
+                survivors_active.append(a)
+                n_cats = max(len(a.get("categories", [])), 1)
+                for cat in a.get("categories", []):
+                    if cat in new_categories:
+                        new_categories[cat] += contribution_a / n_cats
+            for cat in new_categories:
+                new_categories[cat] = min(new_categories[cat], _MAX_SCORE)
+            score.overall = min(max(new_categories.values()), _MAX_SCORE)
+            score.categories = new_categories
+            score.contributing_anomalies = survivors_active[-max_anomalies:]
+            # Trend: (current - previous) / elapsed hours — the active
+            # branch's shape. Dormant entities (own clock unmoved, hours
+            # 0) get 0.
+            score.trend = (
+                (score.overall - prev_overall) / hours if hours > 0 else 0.0
+            )
+            # Stamp the entity's own clock: a no-op for dormant entities
+            # (own_ref IS their persisted clock); advances for
+            # present-in-batch entities; one-shot stamp for legacy scores.
+            own_now = own_ref.isoformat()
+            score.last_updated = own_now
+            score.data_clock = own_now
 
     store.save()
     if degraded_missing_ts:

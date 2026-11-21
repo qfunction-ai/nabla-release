@@ -58,12 +58,17 @@ class TestClockMigration:
         (d / "system_state.json").write_text(json.dumps(
             {"data_newest_ts": "2026-08-15T23:00:00+00:00"}))
         s = run_clock_migration(str(d))
-        assert s["watermarks_initialized"] == 3
+        # round 7: the REAL SIEM kinds seed from the data clock — the
+        # v1 "siem" key was a bug (no source is named that)
+        assert s["watermarks_initialized"] == 4
         state = json.loads((d / "system_state.json").read_text())
         wm = state["source_watermarks"]
-        assert wm["siem"] == "2026-08-15T23:00:00+00:00"
+        assert wm["splunk"] == "2026-08-15T23:00:00+00:00"
+        assert wm["sumologic"] == "2026-08-15T23:00:00+00:00"
+        assert "siem" not in wm
         assert wm["synthetic"] == "" and wm["file"] == ""
         assert state.get("clock_spec_migrated")
+        assert state.get("clock_spec_migrated_v2")
 
     def test_open_hour_carried_into_map(self):
         from nabla.pipeline.clock_migration import run_clock_migration
@@ -73,7 +78,12 @@ class TestClockMigration:
                                  "open_count": 7}}}))
         run_clock_migration(str(d))
         raw = json.loads((d / "entity_profiles.json").read_text())
-        assert raw["users"]["alice"]["open_hours"] == {"2026-08-15T03": 7}
+        # round 7: the accumulator re-homes under the reserved __legacy__
+        # source (engine shape: {source|hour: {count, ids, reopen_wm}})
+        assert raw["users"]["alice"]["open_hours"] == {
+            "__legacy__|2026-08-15T03": {"count": 7, "ids": [],
+                                         "reopen_wm": ""}}
+        assert "open_hour" not in raw["users"]["alice"]
 
     def test_idempotent(self):
         from nabla.pipeline.clock_migration import run_clock_migration

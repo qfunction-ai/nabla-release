@@ -27,6 +27,13 @@ logger = logging.getLogger("nabla.pipeline.clock_ingestion")
 # Rule 2: the only skew tolerance in the system.
 FUTURE_BOUNDARY = timedelta(hours=1)
 
+
+def future_ceiling() -> datetime:
+    """Rule 2's shared wall+1h validation ceiling. One definition —
+    risk's _future_ceiling and the span tracker's guard both delegate
+    here (N-9: three inline copies had already drifted apart once)."""
+    return datetime.now(timezone.utc) + FUTURE_BOUNDARY
+
 # Rule 0: the field-hash key material (stable order).
 _ID_FIELDS = (
     "timestamp", "user", "host", "source_ip", "process", "action",

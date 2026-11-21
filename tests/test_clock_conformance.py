@@ -251,53 +251,81 @@ class Rule6Watermark:
 
     def test_three_piece_reconnect_one_observation(self):
         """U-1: a laptop's backlog over three batches produces ONE correct
-        merged observation, not first-piece-only."""
+        merged observation, not first-piece-only. R-1 (round 7): the
+        engine is STATEFUL — the state threads through the calls and
+        the watermark (advanced per batch) closes the hour."""
         _fresh_dir()
-        from nabla.pipeline.watermark import absorb_late
-        p = absorb_late([[{"timestamp": f"{D}02:00:00Z", "event_id": "e1"},
-                          {"timestamp": f"{D}02:20:00Z", "event_id": "e2"}],
-                         [{"timestamp": f"{D}02:40:00Z", "event_id": "e3"}],
-                         [{"timestamp": f"{D}02:55:00Z", "event_id": "e4"}]])
-        assert p["observations"] == [(f"{D[:11]}02", 4)], (
-            f"U-1: pieces produced {p['observations']} — expected one "
-            f"merged observation of 4")
+        from nabla.pipeline.watermark import absorb_state, new_state, close_open
+        state = new_state()
+        # three 5-minute pieces; the watermark advances per batch but
+        # never passes hour-end + 2h lateness until the last close
+        for wm, piece in (
+                (f"{D}02:25:00Z", [{"timestamp": f"{D}02:00:00Z", "event_id": "e1"},
+                                   {"timestamp": f"{D}02:20:00Z", "event_id": "e2"}]),
+                (f"{D}02:45:00Z", [{"timestamp": f"{D}02:40:00Z", "event_id": "e3"}]),
+                (f"{D}03:00:00Z", [{"timestamp": f"{D}02:55:00Z", "event_id": "e4"}]),
+        ):
+            state, obs, _ex = absorb_state(
+                state, wm, piece, source_kind="splunk", mode="live")
+            assert obs == [], "hour 02 must stay open while the watermark is inside it"
+        # the sweep closes it once the watermark passes 02:00+1h+2h
+        closed = close_open(state, {"splunk": f"{D}05:30:00Z"}, 21.0)
+        assert closed == [(f"splunk|{D[:11]}02", 4)], (
+            f"U-1: pieces produced {closed} — expected one merged "
+            f"observation of 4")
 
     def test_backfill_without_live_data_records_every_hour(self):
         """V-2: a newest-first backfill with no live data afterwards still
         records every hour (batch-end close, not watermark close)."""
         _fresh_dir()
-        from nabla.pipeline.watermark import absorb_late
+        from nabla.pipeline.watermark import absorb_state, new_state
+        state = new_state()
         chunks = [[{"timestamp": f"{D}0{h}:10:00Z", "event_id": f"a{h}"}
                    for h in (5, 4, 3)],
                   [{"timestamp": f"{D}0{h}:10:00Z", "event_id": f"b{h}"}
                    for h in (2, 1, 0)]]
-        p = absorb_late(chunks, backfill=True)
-        assert len(p["observations"]) == 6, (
-            f"V-2: newest-first backfill recorded {len(p['observations'])} "
+        total = 0
+        for chunk in chunks:
+            state, obs, _ex = absorb_state(
+                state, None, chunk, source_kind="file", mode="backfill")
+            total += len(obs)
+        assert total == 6, (
+            f"V-2: newest-first backfill recorded {total} "
             f"of 6 hours — hours waiting for a watermark that never moves")
 
     def test_overlap_pulls_do_not_double_count(self):
         """S-3: overlapping pulls deliver the same event twice — the open
         hour's ID filter merges it once."""
         _fresh_dir()
-        from nabla.pipeline.watermark import absorb_late
+        from nabla.pipeline.watermark import absorb_state, new_state, close_open
+        state = new_state()
         same = [{"timestamp": f"{D}02:00:00Z", "event_id": "e1"}]
-        p = absorb_late([same, list(same)])
-        assert p["observations"] == [(f"{D[:11]}02", 1)], (
-            f"S-3: duplicate pull produced {p['observations']}")
+        state, obs, _ex = absorb_state(
+            state, f"{D}02:05:00Z", same, source_kind="splunk", mode="live")
+        state, obs, _ex = absorb_state(
+            state, f"{D}02:10:00Z", list(same), source_kind="splunk", mode="live")
+        closed = close_open(state, {"splunk": f"{D}05:30:00Z"}, 21.0)
+        assert closed == [(f"splunk|{D[:11]}02", 1)], (
+            f"S-3: duplicate pull produced {closed}")
 
     def test_drain_merges_by_hour(self):
         """T-1: approved drain batches are schedule fragments — merge all
         batches per entity-hour before observing."""
         _fresh_dir()
-        from nabla.pipeline.watermark import absorb_late
-        p = absorb_late([
-            [{"timestamp": f"{D}02:01:00Z", "event_id": "d1"},
-             {"timestamp": f"{D}02:03:00Z", "event_id": "d2"}],   # 5-min batch 1
-            [{"timestamp": f"{D}02:20:00Z", "event_id": "d3"}],   # batch 2
-        ], drain=True)
-        assert p["observations"] == [(f"{D[:11]}02", 3)], (
-            f"T-1: drain observed {p['observations']} — fragments must "
+        from nabla.pipeline.watermark import absorb_state, new_state
+        state = new_state()
+        # the drain path (drain_approved_pending) merges fragments per
+        # (source, hour) before calling the engine; drain mode then
+        # observes each hour immediately, registry-checked
+        merged = [
+            {"timestamp": f"{D}02:01:00Z", "event_id": "d1"},
+            {"timestamp": f"{D}02:03:00Z", "event_id": "d2"},   # 5-min batch 1
+            {"timestamp": f"{D}02:20:00Z", "event_id": "d3"},   # batch 2
+        ]
+        state, obs, _ex = absorb_state(
+            state, None, merged, source_kind="splunk", mode="drain")
+        assert obs == [(f"splunk|{D[:11]}02", 3)], (
+            f"T-1: drain observed {obs} — fragments must "
             f"merge to one hourly observation of 3")
 
 

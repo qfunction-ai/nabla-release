@@ -303,7 +303,16 @@ class _ProfileMixin:
                     hist[int(k)] = hist.get(int(k), 0.0) + float(v)
                 kwargs[f.name] = hist
             else:
-                default = f.default if f.default is not dataclasses.MISSING else ""
+                if f.default is not dataclasses.MISSING:
+                    default = f.default
+                elif f.default_factory is not dataclasses.MISSING:  # type: ignore[attr-defined]
+                    # N-2 (round 7): default_factory fields (dict/list state)
+                    # deserialize to a FRESH factory value when absent —
+                    # the old "" fallback made open_hours deserialize as a
+                    # string and crash the engine on first touch.
+                    default = f.default_factory()  # type: ignore[misc]
+                else:
+                    default = ""
                 if isinstance(default, (int, float)):
                     kwargs[f.name] = data.get(f.name, default)
                 else:
@@ -370,29 +379,31 @@ class UserProfile(_ProfileMixin):
     # compared network counts against the all-events EWMA (a subset vs its
     # superset; z systematically understated, detector rarely fired)
     network_event_rate: "EWMAProfile" = field(default_factory=lambda: EWMAProfile())
-    # N4 (round 4): the absolute-hour accumulator — the partial current
-    # hour's count, closed as ONE complete-hour EWMA observation when a
-    # later hour arrives. Batches of any size compose: two half-hour
-    # batches make one observation of the full hour, not two of halves.
-    open_hour: str = ""      # "YYYY-MM-DDTH" of the accumulating hour
-    open_count: int = 0
-    # Same accumulator shape for the NETWORK-event rate (exfil_volume's
-    # baseline must be cadence-independent for the same reason).
-    net_open_hour: str = ""
-    net_open_count: int = 0
+    # N-2/R-1 (round 7): the stateful Rule 6 engine state — per-stream
+    # (event + network) open-hours maps keyed "source|hour" -> {count,
+    # ids, reopen_wm} and observed-hours registries keyed the same ->
+    # {count, wm}. Replaces the single open_hour/open_count accumulator
+    # (one open hour at a time; late fragments each observed as their
+    # own complete hour — the R6-7 undercount) and the shared
+    # closed_hours list (no counts, no source separation, no watermark
+    # stamps — R-14/R-15).
+    open_hours: dict[str, dict] = field(default_factory=dict)
+    observed_hours: dict[str, dict] = field(default_factory=dict)
+    net_open_hours: dict[str, dict] = field(default_factory=dict)
+    net_observed_hours: dict[str, dict] = field(default_factory=dict)
     typical_actions: dict[str, float] = field(default_factory=dict)
     auth_failure_ratio: EWMAProfile = field(default_factory=EWMAProfile)
     off_hours_ratio: EWMAProfile = field(default_factory=EWMAProfile)
-    # S4/S6 (round 5): closed-hours registry — absolute hours already
-    # observed as complete. Late events for a CLOSED hour MERGE into that
-    # hour's observation once (overlapping SIEM pulls must not
-    # double-observe; approved-drain batches held for days are
-    # definitionally late and must still land). Bounded at 48 hours.
-    closed_hours: list[str] = field(default_factory=list)
     # S7 (round 5): the last absolute hour a rate alert fired for this
     # user — one alert per entity per hour, even when 5-min batches
     # re-score the cumulative hour.
     last_rate_alert_hour: str = ""
+    # R-4 (round 7): held-batch IDs already absorbed by a drain — the
+    # crash-replay guard. Assigned per batch at HOLD time (a whole-set
+    # fingerprint breaks the moment a new approval arrives between crash
+    # and restart). Saved with the store; the post-save commit
+    # (commit_drain_after_save) removes exactly these batches.
+    drained_batch_ids: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict) -> UserProfile:
@@ -685,7 +696,9 @@ class EntityProfileStore:
     # --- Update methods ---
 
     def update_user(self, entity_id: str, entries: list[dict],
-                    *, bypass_quarantine: bool = False) -> None:
+                    *, bypass_quarantine: bool = False,
+                    source_kind: str | None = None,
+                    watermark: str | None = None) -> None:
         """Update a user profile with current-run observations.
 
         Updates EWMA profiles, adds to IP/hour/action sets, and
@@ -698,6 +711,14 @@ class EntityProfileStore:
                 True: a false-positive disposition already ruled on this
                 data, so a same-run re-flag must not re-hold it. Only the
                 drain path sets this; live batches still respect holds.
+            source_kind: N-2 (round 7) — the batch's pipeline source
+                ("splunk" | "sumologic" | "synthetic" | "file"). Keys the
+                Rule 6 engine's per-(source, hour) state (R-15) and picks
+                the mode: SIEM sources are LIVE (watermark semantics);
+                file/synthetic are BACKFILL (hour-aligned windows close
+                at batch end, V-2). None defaults to "file".
+            watermark: the source's watermark (ISO) — the run passes its
+                in-memory advanced value; None reads the persisted one.
         """
         profile = self.get_or_create_user(entity_id)
         profile.last_seen = _now_iso()
@@ -720,7 +741,7 @@ class EntityProfileStore:
         ):
             self._bump_quarantine_clock(entity_id)
             try:
-                hold_pending(entity_id, entries)
+                hold_pending(entity_id, entries, source_kind=source_kind)
             except Exception:
                 pass  # silent by design: pending-store failure must not break the run (round-3 sweep)
             return  # sets/EWMA/observation_count untouched while held
@@ -729,14 +750,32 @@ class EntityProfileStore:
 
         # Event RATE EWMA (R4): hour-bucketed observation rate — batch-span
         # division swung wildly on scheduler-sized batches (2 events/1min =
-        # 120/hr); event-time bucketing is boundary-independent
-        # N4 (round 4): absolute-hour absorption — one EWMA observation
-        # per COMPLETE hour, composed across batches via the profile's
-        # open_hour/open_count accumulator. The old mean-per-active-hour
-        # observation tracked batch size (a 3-day batch read 3x a day
-        # batch), so baselines built at one cadence lied at another.
-        from nabla.baselines import absorb_absolute_hours, absolute_hour_counts
-        absorb_absolute_hours(profile, absolute_hour_counts(entries))
+        # 120/hr); event-time bucketing is boundary-independent.
+        # N-2/R-1 (round 7): the STATEFUL Rule 6 engine replaces the
+        # single-accumulator absolute-hour absorption. One EWMA
+        # observation per COMPLETE hour, composed across batches through
+        # the profile's persisted open-hours state; late pieces re-open
+        # and merge (U-1); the source watermark closes hours (R-16's
+        # sweep catches quiet entities at run end).
+        src = source_kind or "file"
+        # synthetic runs on the 5-minute SCHEDULE — it is a live stream,
+        # not an hour-aligned backfill window (V-2 applies to file chunks
+        # only; the chunker cuts those at hour boundaries).
+        mode = "drain" if bypass_quarantine else (
+            "live" if src in ("splunk", "sumologic", "synthetic")
+            else "backfill")
+        if watermark is None:
+            watermark = _lookup_source_watermark(src)
+        from nabla.pipeline.watermark import absorb_state
+        window = _registry_window_days()
+        state_ev = {"open": profile.open_hours, "observed": profile.observed_hours}
+        _state_ev, obs_ev, _excl = absorb_state(
+            state_ev, watermark, entries,
+            source_kind=src, mode=mode, window_days=window)
+        profile.open_hours = state_ev["open"]
+        profile.observed_hours = state_ev["observed"]
+        for _key, _count in obs_ev:
+            profile.typical_event_count.update(float(_count))
 
         # F1: the NETWORK-event rate baseline is learned here, in absorption,
         # like every other baseline — not inside the detector that scores
@@ -745,18 +784,24 @@ class EntityProfileStore:
         # learn meant the detector could never fire. That is why R13's fix was
         # hollow even before the serialization bug was found. Detection runs
         # before absorption, so this still scores-then-learns.
-        # N4: same accumulator shape — the network EWMA observes complete
-        # hours too (exfil_volume's baseline must be cadence-independent
-        # for the same reason the all-events one must).
+        # R-2 (round 7): the network stream runs the SAME stateful engine
+        # with its own open-hours state and registry (the old shared
+        # closed_hours list blocked network observation of any hour the
+        # event stream had observed — network hours under-observed).
         net_entries = [
             e for e in entries
             if e.get("action") == "network_connect" or e.get("type") == "network"
         ]
         if net_entries:
-            absorb_absolute_hours(
-                profile, absolute_hour_counts(net_entries),
-                ewma_attr="network_event_rate",
-                open_hour_attr="net_open_hour", open_count_attr="net_open_count")
+            state_net = {"open": profile.net_open_hours,
+                         "observed": profile.net_observed_hours}
+            _state_net, obs_net, _excl_n = absorb_state(
+                state_net, watermark, net_entries,
+                source_kind=src, mode=mode, window_days=window)
+            profile.net_open_hours = state_net["open"]
+            profile.net_observed_hours = state_net["observed"]
+            for _key, _count in obs_net:
+                profile.network_event_rate.update(float(_count))
 
         # IPs (only publicly routable — private IPs are not useful for
         # impossible-travel detection and would cause false positives)
@@ -1082,70 +1127,58 @@ def observation_rate(entries: list[dict]) -> float:
     return sum(buckets.values()) / len(buckets)
 
 
-def absorb_absolute_hours(profile, buckets: "dict[str, int]",
-                          ewma_attr: str = "typical_event_count",
-                          open_hour_attr: str = "open_hour",
-                          open_count_attr: str = "open_count",
-                          closed_attr: str = "closed_hours") -> int:
-    """N4 (round 4) + S4/S6 (round 5): absorb absolute-hour buckets into a
-    rate EWMA via the profile's accumulator. A batch CLOSES every hour it
-    completes (each closed hour = one complete-hour observation) and
-    accumulates its newest hour as the profile's open state.
+def _registry_window_days() -> float:
+    """R-7/R-9 (round 7): the observed-hours registry window —
+    max(TP-hold days, baseline_min_days). Sized so a TP hold released at
+    its 14-day edge still finds the hours it held, and so baseline
+    minimum-days reads see their own history."""
+    from nabla.config import get_settings
+    s = get_settings()
+    tp = float(getattr(s, "quarantine_tp_hold_days", 14.0) or 14.0)
+    min_days = float(getattr(s, "baseline_min_days", 21) or 21)
+    return max(tp, min_days)
 
-    Late data (S4): an hour OLDER than the accumulator that has not been
-    observed before becomes its own observation and is REGISTERED. A late
-    hour already in the closed registry is a duplicate pull (or a
-    days-late approved drain arriving in pieces) — the observation
-    already exists, so re-observing would double-count. Merge-once
-    semantics (self-review R6: the plan's v1 skip-everything silently ate
-    the S6 fix — approved drains are definitionally late, and
-    bypass_quarantine got them past the hold only for absorption to drop
-    every hour of them; "already observed" is the ONLY drop condition).
 
-    The network-rate accumulator passes net_* attrs; the closed-hours
-    registry is shared per (profile, ewma) pair via closed_attr, so the
-    event-rate and network-rate absorptions keep separate registries.
+def _lookup_source_watermark(source_kind: str) -> str:
+    """The persisted watermark for this source ("" if none). The
+    orchestration passes its in-memory advanced value instead; this
+    read serves callers outside the pipeline (drains, tests)."""
+    from nabla.config import get_settings
+    from nabla.system_state import load_system_state
+    state = load_system_state(get_settings().system_state_file)
+    wms = state.get("source_watermarks") or {}
+    return str(wms.get(source_kind) or "")
 
-    Returns the number of EWMA observations made.
-    """
-    if not buckets:
-        return 0
-    ewma = getattr(profile, ewma_attr)
-    open_hour = getattr(profile, open_hour_attr)
-    open_count = getattr(profile, open_count_attr)
-    closed: list[str] = list(getattr(profile, closed_attr, None) or [])
-    obs = 0
-    for hour in sorted(buckets):
-        if hour == open_hour:
-            open_count += buckets[hour]
-        elif hour > (open_hour or ""):
-            if open_hour:
-                ewma.update(float(open_count))  # close the finished hour
-                if open_hour not in closed:
-                    closed.append(open_hour)
-                obs += 1
-            open_hour, open_count = hour, buckets[hour]
-        elif hour in closed:
-            # Late duplicate of an already-observed hour: merge-once —
-            # the observation exists; do not re-observe.
-            continue
-        else:
-            # Late but NEW: one observation of its own, registered.
-            ewma.update(float(buckets[hour]))
-            closed.append(hour)
-            obs += 1
-    if len(closed) > 48:  # bound the registry; sorted appends keep it ordered
-        closed = closed[-48:]
-    setattr(profile, open_hour_attr, open_hour)
-    setattr(profile, open_count_attr, open_count)
-    try:
-        setattr(profile, closed_attr, closed)
-    except (AttributeError, TypeError):
-        # silent by design: profile classes without the registry field
-        # (hosts mid-migration) — the registry is an optimization, not a
-        # correctness requirement for them (S4 sweep 2026-11-19)
-        pass
-    return obs
+
+def sweep_profile_hours(store: "EntityProfileStore", sys_state: dict) -> int:
+    """R-16/R-17 (round 7): end-of-run close sweep. Every profile's open
+    hours close against their OWN source's watermark — a quiet entity
+    (no events this run) still gets its finished hours observed, so
+    baselines don't stall while the entity is away. Hours closed by the
+    sweep are recorded in the registry exactly like live closes (never
+    treated as late). Runs BEFORE the profile store save (R-17: the
+    watermark persists after — a crash leaves profile-behind-watermark,
+    which the idempotent close absorbs on replay).
+
+    Returns the number of observations made."""
+    from nabla.pipeline.watermark import close_open
+    from nabla.system_state import source_watermarks_view
+    watermarks = source_watermarks_view(sys_state)
+    window = _registry_window_days()
+    total = 0
+    for profile in store.users.values():
+        ev_state = {"open": profile.open_hours,
+                    "observed": profile.observed_hours}
+        net_state = {"open": profile.net_open_hours,
+                     "observed": profile.net_observed_hours}
+        obs_ev = close_open(ev_state, watermarks, window)
+        for _key, _count in obs_ev:
+            profile.typical_event_count.update(float(_count))
+        obs_net = close_open(net_state, watermarks, window)
+        for _key, _count in obs_net:
+            profile.network_event_rate.update(float(_count))
+        total += len(obs_ev) + len(obs_net)
+    return total
 
 
 def hourly_rates(entries: list[dict], profile) -> dict[str, float]:
@@ -1158,10 +1191,14 @@ def hourly_rates(entries: list[dict], profile) -> dict[str, float]:
     buckets = absolute_hour_counts(entries)
     if not buckets:
         return {}
-    open_hour = getattr(profile, "open_hour", "")
-    open_count = getattr(profile, "open_count", 0)
+    # N-2 (round 7): the open state is per (source, hour) — compose the
+    # batch with this hour's open counts summed across sources.
+    open_by_hour: dict[str, int] = {}
+    for key, entry in (getattr(profile, "open_hours", None) or {}).items():
+        _src, _, hour = key.partition("|")
+        open_by_hour[hour] = open_by_hour.get(hour, 0) + int(entry.get("count", 0))
     return {
-        hour: float(n + (open_count if hour == open_hour else 0))
+        hour: float(n + open_by_hour.get(hour, 0))
         for hour, n in buckets.items()
     }
 
@@ -1320,7 +1357,44 @@ def _pending_entries_stamps(entries: list[dict]) -> str:
     return max((e.get("timestamp", "") for e in entries), default="")
 
 
-def hold_pending(entity_id: str, entries: list[dict]) -> None:
+def _batch_entries(batch) -> list[dict]:
+    """Held-batch payload. R-4 (round 7): holds wrap each batch as
+    {"batch_uid", "entries"}; legacy files (pre-round-7) and older
+    fixtures carry bare entry lists. Both shapes drain identically."""
+    if isinstance(batch, dict):
+        return list(batch.get("entries") or [])
+    return list(batch)
+
+
+def _batch_uid(entity_id: str, batch) -> str:
+    """Stable per-batch identity (R-4). Wrapped batches carry the uid
+    assigned at HOLD time; legacy bare batches get a deterministic
+    content-derived uid so a crash replay computes the same id."""
+    if isinstance(batch, dict):
+        uid = str(batch.get("batch_uid") or "")
+        if uid:
+            return uid
+        batch = batch.get("entries") or []
+    import hashlib
+    entries = sorted(
+        (str(e.get("event_id", "")), str(e.get("timestamp", "")))
+        for e in batch
+    )
+    material = entity_id + "|" + str(entries)
+    return "legacy:" + hashlib.sha256(material.encode()).hexdigest()[:16]
+
+
+def _batch_source(batch) -> str:
+    """N-2 (round 7): the held batch's pipeline source. Wrapped batches
+    carry it; legacy wrappers and bare lists default to "file" (the
+    pre-round-7 hold path only saw file batches)."""
+    if isinstance(batch, dict):
+        return str(batch.get("source_kind") or "file")
+    return "file"
+
+
+def hold_pending(entity_id: str, entries: list[dict],
+                 *, source_kind: str | None = None) -> None:
     """Hold a quarantined entity's batch for later application (R6).
 
     N3 (round 4): capped by data-clock span (7 days — the hold's own TTL)
@@ -1335,19 +1409,24 @@ def hold_pending(entity_id: str, entries: list[dict]) -> None:
     with file_lock(str(_pending_file())):
         pend = _load_pending()
         batches = pend.setdefault(entity_id, [])
-        batches.append(entries)
+        # R-4: identity assigned at HOLD time, per batch
+        from uuid import uuid4
+        batches.append({"batch_uid": uuid4().hex[:16],
+                        "source_kind": source_kind or "file",
+                        "entries": entries})
         # span cap: drop whole batches older than the cutoff
         from datetime import timedelta as _td
         now_dc = _data_clock_now()
         cutoff = now_dc - _td(days=_PENDING_SPAN_DAYS)
         kept = []
         for b in batches:
-            newest = parse_iso_timestamp(_pending_entries_stamps(b) or "")
+            newest = parse_iso_timestamp(
+                _pending_entries_stamps(_batch_entries(b)) or "")
             if newest is not None and newest < cutoff:
                 continue  # older than the span cap — drop
             kept.append(b)
         # count cap: newest events win
-        total = sum(len(b) for b in kept)
+        total = sum(len(_batch_entries(b)) for b in kept)
         while total > _PENDING_EVENT_CAP and kept:
             drop = kept.pop(0)
             total -= len(drop)
@@ -1395,7 +1474,7 @@ def _save_approved(apr: dict) -> None:
     atomic_write_json(p, apr)
 
 
-def drain_approved_pending(store: "EntityProfileStore") -> int:
+def drain_approved_pending(store: "EntityProfileStore") -> dict[str, list[str]]:
     """Pipeline START: apply every approved entity's held batches through
     the normal update_user, inside the caller's load-save window (N3 +
     STRONG 2: ALL approved entities drain — an entity that goes quiet
@@ -1403,93 +1482,151 @@ def drain_approved_pending(store: "EntityProfileStore") -> int:
 
     CLOCK-SPEC Rule 6 / T-1 (round 6): held batches are schedule
     FRAGMENTS (5 minutes on the live schedule), not hours — observing
-    each as an hour undercounted ~12x. Batches now merge per
-    entity-hour before absorption, and each drain carries a batch ID
-    recorded with the store save so a crash-replay is recognized and
-    skipped (V-4 idempotency lives here, not in Phase 9)."""
+    each as an hour undercounted ~12x. Batches merge per entity-hour
+    before absorption.
+
+    R-3/R-4 (round 7): this drain rewrites NOTHING. It applies through
+    update_user, records the applied per-batch IDs on the profile
+    (drained_batch_ids, assigned at HOLD time — a whole-set fingerprint
+    breaks when a new approval arrives between crash and restart), and
+    returns what it processed. The caller's post-save commit
+    (commit_drain_after_save) removes exactly those batches from
+    approved.json — R-11: a verdict arriving mid-run survives, and a
+    crash between save and commit replays as a no-op.
+
+    Returns {entity_id: [batch uids processed]}."""
     from nabla.persistence import file_lock
     with file_lock(str(_approved_file())):
         apr = _load_approved()
         if not apr:
-            return 0
-        total = 0
+            return {}
+        processed: dict[str, list[str]] = {}
         from collections import defaultdict as _dd
         from nabla.pipeline.clock_ingestion import event_hour_key as _ehk
         for entity_id, batches in apr.items():
-            # T-1: merge ALL fragments per hour; skip hours the registry
-            # already observed (data absorbed live before the hold)
-            by_hour: dict[str, list[dict]] = _dd(list)
-            for entries in batches:
-                for e in entries:
-                    h = _ehk(e)
-                    if h:
-                        by_hour[h].append(e)
             profile = store.get_or_create_user(entity_id)
-            closed = set(getattr(profile, "closed_hours", None) or [])
-            drained_ids = set(getattr(profile, "_drained_batch_ids", None) or [])
-            batch_id = _drain_batch_id(entity_id, apr)
-            if batch_id in drained_ids:
-                continue  # crash replay: already applied with the store save
-            for h in sorted(by_hour):
-                if h in closed:
-                    continue
-                # S6 + T-1: bypass the hold (analyst verdict), full hour
-                store.update_user(entity_id, by_hour[h], bypass_quarantine=True)
-                total += 1
-            drained_ids.add(batch_id)
-            try:
-                profile._drained_batch_ids = sorted(drained_ids)[-20:]
-            except Exception:
-                # silent by design: the replay-guard memo is an
-                # optimization; failure to persist it only risks a
-                # harmless re-apply (T-1 sweep 2026-11-20)
-                pass
-        # R6-16 (round 6): the CLEAR moved to the caller's post-save step
-        # (clear_approved_after_save) — the old order cleared approved.json
-        # before the profile store was saved, so a crash between them lost
-        # the analyst's verdict. Drain-batch IDs make the residual window
-        # idempotent.
-        return total
+            drained = set(getattr(profile, "drained_batch_ids", None) or [])
+            # R-4: filter applied batches FIRST — the by-hour merge must
+            # not mix crash-replayed batches into hours the registry
+            # already observed (a closed hour would swallow the
+            # not-yet-applied fragments merged into it)
+            todo = [b for b in batches if _batch_uid(entity_id, b) not in drained]
+            new_uids = [_batch_uid(entity_id, b) for b in todo]
+            if todo:
+                # T-1: merge ALL fragments per (source, hour) — R-15
+                # keys state per source; the engine's registry check
+                # skips hours already observed (data absorbed live
+                # before the hold)
+                by_key: dict[tuple[str, str], list[dict]] = _dd(list)
+                for b in todo:
+                    src = _batch_source(b)
+                    for e in _batch_entries(b):
+                        h = _ehk(e)
+                        if h:
+                            by_key[(src, h)].append(e)
+                for (src, h) in sorted(by_key):
+                    # S6 + T-1: bypass the hold (analyst verdict),
+                    # full hour; drain mode observes each hour
+                    # immediately, registry-checked
+                    store.update_user(entity_id, by_key[(src, h)],
+                                      bypass_quarantine=True,
+                                      source_kind=src)
+                profile.drained_batch_ids = sorted(
+                    drained | set(new_uids))[-200:]
+            # the commit removes everything already applied — including
+            # batches applied in a PREVIOUS crashed run (replay: todo is
+            # empty, the uids are in drained, but they still sit in
+            # approved.json until a commit removes them)
+            drained_after = drained | set(new_uids)
+            to_remove = [u for u in (_batch_uid(entity_id, b) for b in batches)
+                         if u in drained_after]
+            if to_remove:
+                processed[entity_id] = to_remove
+        return processed
 
 
-def clear_approved_after_save() -> int:
-    """R6-16: clear the approved store AFTER the caller saved the profile
-    store. Returns entities cleared."""
+def commit_drain_after_save(applied_approved: "dict[str, list[str]] | None" = None,
+                            released: "dict[str, list[str]] | None" = None,
+                            hold_tokens: "dict[str, str] | None" = None) -> None:
+    """R6-16 + R-11 + R-3 (round 7): the post-save commit for the
+    quarantine drains. The caller runs this AFTER the profile store
+    persisted — the profile save is what makes the per-batch drained IDs
+    durable, so a crash before this point replays as a no-op instead of
+    losing the verdict.
+
+    SELECTIVE (R-11): removes only the batches the drains processed. An
+    analyst verdict arriving mid-run (between drain and commit) is not
+    in the map and survives for the next run. The old whole-file clear
+    wiped it.
+
+    Quarantine holds (TTL releases) flip to released only if the hold
+    was not re-armed mid-run — the since-token guards a same-run
+    re-flag from detection."""
     from nabla.persistence import file_lock
-    with file_lock(str(_approved_file())):
-        apr = _load_approved()
-        n = len(apr)
-        if apr:
-            _save_approved({})
-        return n
+    if applied_approved:
+        with file_lock(str(_approved_file())):
+            apr = _load_approved()
+            for eid, uids in applied_approved.items():
+                uid_set = set(uids)
+                remaining = [b for b in apr.get(eid, [])
+                              if _batch_uid(eid, b) not in uid_set]
+                if remaining:
+                    apr[eid] = remaining
+                else:
+                    apr.pop(eid, None)
+            _save_approved(apr)
+    if released:
+        with file_lock(str(_pending_file())), file_lock(str(_quarantine_file())):
+            pend = _load_pending()
+            q = _load_quarantine()
+            for eid, uids in released.items():
+                uid_set = set(uids)
+                remaining = [b for b in pend.get(eid, [])
+                              if _batch_uid(eid, b) not in uid_set]
+                if remaining:
+                    pend[eid] = remaining
+                else:
+                    pend.pop(eid, None)
+                ent = q.get(eid)
+                if ent and ent.get("held"):
+                    # flip only the hold the drain drained — a mid-run
+                    # re-arm (new since) must survive
+                    if not hold_tokens or ent.get("since") == hold_tokens.get(eid):
+                        ent["held"] = False
+                        ent["released_at"] = _data_clock_now().isoformat()
+                        ent["released_by"] = "ttl_apply"
+            _save_pending(pend)
+            _save_quarantine(q)
 
 
-def _drain_batch_id(entity_id: str, apr: dict) -> str:
-    """A stable ID for this approval set — fingerprint of the batch
-    contents (crash replay after the store was saved but approved.json
-    was not yet cleared re-enters with the same fingerprint)."""
-    import hashlib
-    material = entity_id + "|" + str(sorted(
-        tuple(sorted((str(e.get("event_id", "")), str(e.get("timestamp", "")))
-                     for e in entries))
-        for entries in apr.get(entity_id, [])
-    ))
-    return hashlib.sha256(material.encode()).hexdigest()[:16]
-
-
-def drain_released_pending(store: "EntityProfileStore") -> int:
+def drain_released_pending(
+        store: "EntityProfileStore") -> "tuple[dict[str, list[str]], dict[str, str]]":
     """TTL-release drain (final-review REQUIRED 1): a no-disposition TTL
     expiry means 'review window elapsed, treat as normal' — held batches
     APPLY (the self-healing choice; the accepted cost is that the 7-day
     TTL is the maximum attack-absorption lag for undispositioned
-    hold-list findings). Entities whose hold has expired route here."""
+    hold-list findings). Entities whose hold has expired route here.
+
+    R-3 (round 7): this drain rewrites NOTHING. The old body popped
+    pending.json and saved it (and flipped the quarantine flags) BEFORE
+    the profile store persisted — a crash in between lost the held data
+    for good. It now applies through update_user, records per-batch IDs
+    on the profile (R-4), and returns what it released; the caller's
+    post-save commit (commit_drain_after_save) removes those batches
+    and flips the holds.
+
+    Returns ({entity_id: [batch uids processed]},
+             {entity_id: quarantine since-token at drain time})."""
     from nabla.persistence import file_lock
     # lock order: pending then quarantine (alphabetical file names —
     # approve_pending takes approved-then-pending; no cycle)
     with file_lock(str(_pending_file())), file_lock(str(_quarantine_file())):
         q = _load_quarantine()
         pend = _load_pending()
-        total = 0
+        processed: dict[str, list[str]] = {}
+        hold_tokens: dict[str, str] = {}
+        from collections import defaultdict as _dd
+        from nabla.pipeline.clock_ingestion import event_hour_key as _ehk
         for entity_id, ent in list(q.items()):
             if not ent.get("held"):
                 continue
@@ -1497,16 +1634,37 @@ def drain_released_pending(store: "EntityProfileStore") -> int:
                 continue  # TP holds discard, never apply
             if _is_quarantined(entity_id):
                 continue  # still inside the TTL window
-            batches = pend.pop(entity_id, [])
-            for entries in batches:
-                store.update_user(entity_id, entries)
-                total += 1
-            ent["held"] = False
-            ent["released_at"] = _data_clock_now().isoformat()
-            ent["released_by"] = "ttl_apply"
-        _save_pending(pend)
-        _save_quarantine(q)
-        return total
+            batches = pend.get(entity_id, [])
+            profile = store.get_or_create_user(entity_id)
+            drained = set(getattr(profile, "drained_batch_ids", None) or [])
+            todo = [b for b in batches
+                    if _batch_uid(entity_id, b) not in drained]
+            new_uids = [_batch_uid(entity_id, b) for b in todo]
+            if todo:
+                by_key: dict[tuple[str, str], list[dict]] = _dd(list)
+                for b in todo:
+                    src = _batch_source(b)
+                    for e in _batch_entries(b):
+                        h = _ehk(e)
+                        if h:
+                            by_key[(src, h)].append(e)
+                for (src, h) in sorted(by_key):
+                    store.update_user(entity_id, by_key[(src, h)],
+                                      bypass_quarantine=True,
+                                      source_kind=src)
+                profile.drained_batch_ids = sorted(
+                    drained | set(new_uids))[-200:]
+            # the commit removes everything already applied — including
+            # batches applied in a PREVIOUS crashed run (replay: todo is
+            # empty, the uids are in drained, but they still sit in
+            # pending.json until a commit removes them)
+            drained_after = drained | set(new_uids)
+            to_remove = [u for u in (_batch_uid(entity_id, b) for b in batches)
+                         if u in drained_after]
+            if to_remove:
+                processed[entity_id] = to_remove
+            hold_tokens[entity_id] = str(ent.get("since", ""))
+        return processed, hold_tokens
 
 
 def apply_pending(entity_id: str, store: "EntityProfileStore") -> int:
@@ -1521,11 +1679,10 @@ def apply_pending(entity_id: str, store: "EntityProfileStore") -> int:
         pend = _load_pending()
         batches = pend.pop(entity_id, [])
         _save_pending(pend)
-    for entries in batches:
-        if entity_id in store.users:
-            store.update_user(entity_id, entries)
-        else:
-            store.update_user(entity_id, entries)  # creates + absorbs
+    for b in batches:
+        store.update_user(entity_id, _batch_entries(b),
+                          bypass_quarantine=True,
+                          source_kind=_batch_source(b))
     return len(batches)
 
 

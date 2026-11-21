@@ -28,6 +28,7 @@ from pathlib import Path
 logger = logging.getLogger("nabla.pipeline.clock_migration")
 
 MARKER = "clock_spec_migrated"
+MARKER_V2 = "clock_spec_migrated_v2"
 _CEILING_HOURS = 1
 
 
@@ -42,7 +43,10 @@ def run_clock_migration(data_dir: str) -> dict:
             state = json.loads(state_path.read_text() or "{}")
         except (json.JSONDecodeError, OSError):
             state = {}
-    if state.get(MARKER):
+    # v2 (round 7) is the master short-circuit: the stateful Rule 6
+    # engine changed the shapes the v1 migration seeded, so v2 must run
+    # on v1 installs too (and after a first-time v1 run, same boot).
+    if state.get(MARKER_V2):
         return {"skipped": True}
 
     summary = {"registries_reset": 0, "anomalies_deduped": 0,
@@ -61,10 +65,9 @@ def run_clock_migration(data_dir: str) -> dict:
             for eid, prof in (profiles.get(kind) or {}).items():
                 if prof.pop("closed_hours", None) is not None:
                     summary["registries_reset"] += 1
-                # V-3: carry the single accumulator into the per-hour map
-                oh, oc = prof.get("open_hour", ""), prof.get("open_count", 0)
-                if oh and not prof.get("open_hours"):
-                    prof["open_hours"] = {oh: oc}
+                # V-3's flat open_hours carry is GONE: the v2 section
+                # re-homes the single accumulators directly (below) —
+                # seeding the flat shape here would crash the engine.
                 # 2. Dedupe retained anomalies by (method, entity, norm time)
                 retained = prof.get("contributing_anomalies") or []
                 if isinstance(retained, list) and retained:
@@ -112,16 +115,103 @@ def run_clock_migration(data_dir: str) -> dict:
 
     # 4. V-3: initialize per-source watermarks
     if "source_watermarks" not in state:
+        # round 7: seed the REAL SIEM kinds — "siem" was a v1 bug (no
+        # source is named that); v2's re-key only serves old v1 stores.
         state["source_watermarks"] = {
-            "siem": state.get("data_newest_ts", ""),
+            "splunk": state.get("data_newest_ts", ""),
+            "sumologic": state.get("data_newest_ts", ""),
             "synthetic": "",
             "file": "",
         }
-        summary["watermarks_initialized"] = 3
+        summary["watermarks_initialized"] = 4
 
     state[MARKER] = datetime.now(timezone.utc).isoformat()
     _atomic_write(state_path, state)
     logger.info("clock migration complete: %s", summary)
+    summary.update(_run_v2(data_dir, state, state_path))
+    return summary
+
+
+def _run_v2(data_dir: str, state: dict, state_path: Path) -> dict:
+    """Round 7 (N-2): re-home state written by the v1 migration and the
+    pre-round-7 accumulator fields into the stateful engine's shapes.
+
+    1. open_hours: v1 seeded a FLAT {hour: count} map; the engine reads
+       {source|hour: {count, ids, reopen_wm}}. Flat entries re-home under
+       the reserved __legacy__ source (they close against the data
+       clock — source_watermarks_view exposes it).
+    2. The old single accumulators (open_hour/open_count and the net_*
+       twins) carry into the open maps the same way; closed_hours and
+       the old scalar fields are popped (dead).
+    3. Watermarks: v1 seeded a "siem" key — no source kind is named
+       that. The repaired data_newest_ts re-homes to BOTH real SIEM
+       kinds (splunk, sumologic): either could have fed the data, and a
+       watermark that is too OLD only delays closes (never drops
+       them), so seeding both from the data clock is the safe side.
+    """
+    from nabla.pipeline.watermark import LEGACY_SOURCE
+    summary = {"open_hours_rehomed": 0, "accumulators_rehomed": 0,
+               "watermarks_rekeyed": 0}
+
+    def _rehome(prof: dict) -> None:
+        oh = prof.get("open_hours")
+        if isinstance(oh, dict) and any(
+                isinstance(v, int) for v in oh.values()):
+            prof["open_hours"] = {
+                f"{LEGACY_SOURCE}|{h}": {"count": int(c), "ids": [],
+                                         "reopen_wm": ""}
+                for h, c in oh.items() if isinstance(c, int)
+            }
+            summary["open_hours_rehomed"] += 1
+        noh = prof.get("net_open_hours")
+        if isinstance(noh, dict) and any(
+                isinstance(v, int) for v in noh.values()):
+            prof["net_open_hours"] = {
+                f"{LEGACY_SOURCE}|{h}": {"count": int(c), "ids": [],
+                                         "reopen_wm": ""}
+                for h, c in noh.items() if isinstance(c, int)
+            }
+            summary["open_hours_rehomed"] += 1
+        # pre-round-7 single accumulators (stores that never ran v1)
+        for scalar, count, target in (
+                ("open_hour", "open_count", "open_hours"),
+                ("net_open_hour", "net_open_count", "net_open_hours")):
+            h = prof.pop(scalar, "")
+            c = prof.pop(count, 0)
+            if h and isinstance(c, int):
+                tgt = prof.setdefault(target, {})
+                if isinstance(tgt, dict) and f"{LEGACY_SOURCE}|{h}" not in tgt:
+                    tgt[f"{LEGACY_SOURCE}|{h}"] = {
+                        "count": int(c), "ids": [], "reopen_wm": ""}
+                    summary["accumulators_rehomed"] += 1
+        prof.pop("closed_hours", None)
+
+    profiles_path = Path(data_dir) / "entity_profiles.json"
+    if profiles_path.exists():
+        try:
+            profiles = json.loads(profiles_path.read_text() or "{}")
+        except (json.JSONDecodeError, OSError):
+            profiles = {}
+        for kind in ("users", "hosts", "ips"):
+            for prof in (profiles.get(kind) or {}).values():
+                if isinstance(prof, dict):
+                    _rehome(prof)
+        if summary["open_hours_rehomed"] or summary["accumulators_rehomed"]:
+            _atomic_write(profiles_path, profiles)
+
+    wms = state.get("source_watermarks")
+    if isinstance(wms, dict) and "siem" in wms:
+        siem_ts = str(wms.pop("siem") or "")
+        for kind in ("splunk", "sumologic"):
+            prev = str(wms.get(kind) or "")
+            if siem_ts and (not prev or siem_ts > prev):
+                wms[kind] = siem_ts
+        state["source_watermarks"] = wms
+        summary["watermarks_rekeyed"] = 1
+
+    state[MARKER_V2] = datetime.now(timezone.utc).isoformat()
+    _atomic_write(state_path, state)
+    logger.info("clock migration v2 complete: %s", summary)
     return summary
 
 

@@ -130,6 +130,18 @@ def temp_data_dir():
 
 
 @pytest.fixture
+def env_data_dir(tmp_path, monkeypatch):
+    """Point NABLA_DATA_DIR at a tmp dir AND reset the settings cache —
+    for tests that exercise code resolving get_settings() at call time
+    (the round-7 lock relocation made the CLI lock settings-resolved)."""
+    monkeypatch.setenv("NABLA_DATA_DIR", str(tmp_path))
+    import nabla.config as cfg
+    monkeypatch.setattr(cfg, "_settings", None)
+    yield str(tmp_path)
+    cfg._settings = None
+
+
+@pytest.fixture
 def mock_settings(temp_data_dir):
     """Return a Settings instance pointing at temp_data_dir."""
     from nabla.config import Settings

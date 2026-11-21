@@ -283,7 +283,7 @@ class TestR6QuarantineRound3:
         assert store.get_user("alice").observation_count == obs_before, (
             "the API path must not mutate the profile — drain owns application")
         applied = B.drain_approved_pending(store)
-        assert applied >= 1, "approved batch not drained"
+        assert sum(len(v) for v in applied.values()) >= 1, "approved batch not drained"
         assert store.get_user("alice").observation_count == obs_before + 1, "applied batch advances warm-up once"
         # N4: the EWMA moves only when the applied batch CLOSES an hour;
         # the warm-up counted, which is what "applied" means here.

@@ -217,7 +217,7 @@ class SumoLogicConnector:
         # Host from computer field
         computer = event.get("computer", "")
         if computer:
-            # Strip domain suffix (e.g. EC2AMAZ-OCPNFK9.qfunction.ai → EC2AMAZ-OCPNFK9)
+            # Strip domain suffix (e.g. WIN-SRV01.example.com → WIN-SRV01)
             normalized["host"] = computer.split(".")[0] if "." in computer else computer
 
         # Event ID and action
@@ -450,18 +450,28 @@ class SumoLogicConnector:
         """
         # Try to parse _raw as JSON for structured events
         raw_text = raw.get("_raw", "")
+        # N-6 (round 7): the native ID must survive EVERY path — the
+        # structured early-returns below bypass the envelope fields,
+        # and _messageid lives on the envelope, not in _raw.
+        envelope_mid = raw.get("_messageid")
         if isinstance(raw_text, str) and raw_text.startswith("{"):
             try:
                 event = json.loads(raw_text)
                 if isinstance(event, dict) and ("event_id" in event or "event_data" in event):
                     # Windows Security Event or Sysmon event
-                    return cls._normalize_windows_event(event, log_type)
+                    out = cls._normalize_windows_event(event, log_type)
+                    if envelope_mid is not None and not out.get("message_id"):
+                        out["message_id"] = str(envelope_mid)
+                    return out
             except (json.JSONDecodeError, ValueError):
                 pass  # silent by design: not valid JSON, falls through to field mapping (2026-09 sweep)
 
         # Try to parse Linux Sysmon XML events (syslog-wrapped XML)
         if isinstance(raw_text, str) and "<Event>" in raw_text and "<EventID>" in raw_text:
-            return cls._normalize_linux_sysmon_xml(raw_text, log_type)
+            out = cls._normalize_linux_sysmon_xml(raw_text, log_type)
+            if envelope_mid is not None and not out.get("message_id"):
+                out["message_id"] = str(envelope_mid)
+            return out
 
         normalized: dict[str, Any] = {"type": log_type}
 
@@ -482,6 +492,14 @@ class SumoLogicConnector:
             normalized["host"] = raw["_sourceHost"]
         if "_sourceCategory" in raw and "source" not in raw:
             normalized["source"] = raw["_sourceCategory"]
+
+        # N-6 (round 7): the native ID survives the internal-field drop.
+        # _messageid is SumoLogic's own unique key; the clock layer's
+        # preference order expects it as message_id, and without it every
+        # event fell to the field-hash ID (overlapping pulls cannot dedup
+        # on the source's own key).
+        if envelope_mid is not None and not normalized.get("message_id"):
+            normalized["message_id"] = str(envelope_mid)
 
         # Copy all other fields as-is (user's query already renamed them)
         for key, value in raw.items():

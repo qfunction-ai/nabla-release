@@ -614,9 +614,10 @@ def detect_anomalies(
                                 and getattr(profile, "last_rate_alert_hour", "")
                                 != peak_hour):
                             profile.last_rate_alert_hour = peak_hour
+                            from nabla.pipeline.clock_ingestion import event_hour_key
                             _peak_events = [
                                 e for e in events
-                                if (e.get("timestamp", "") or "")[:13] == peak_hour
+                                if event_hour_key(e) == peak_hour
                             ] or events
                             anomalies.append({
                                 "type": "entity_event_count_spike",
@@ -892,15 +893,16 @@ def detect_anomalies(
                     peak_rate = max(rates.values()) if rates else None
                     entity_spike = (peak_rate is not None
                                     and peak_rate > profile.typical_event_count.value * spike_mult)
-                    if entity_spike or True:
-                        # R6-5: ANY entity-baseline verdict (spike OR
-                        # normal) ends the judgment — the batch spike
-                        # check below must not re-judge a baselined user
-                        entity_flagged = True
+                    # R6-5: ANY entity-baseline verdict (spike OR normal)
+                    # ends the judgment — the batch spike check below must
+                    # not re-judge a baselined user. (Was `if entity_spike
+                    # or True:` — a dead conditional that read like a bug.)
+                    entity_flagged = True
                     if entity_spike:
+                        from nabla.pipeline.clock_ingestion import event_hour_key
                         _peak_h = max(rates, key=lambda h: rates[h])
                         _peak_events = [e for e in events
-                                        if (e.get("timestamp", "") or "")[:13] == _peak_h] or events
+                                        if event_hour_key(e) == _peak_h] or events
                         anomalies.append({
                             "type": "entity_activity_spike",
                             "severity": "high",

@@ -27,8 +27,14 @@ services:
       postgres:
         condition: service_healthy
     networks:
-      - nabla-backend
-      - nabla-db
+      nabla-backend:
+        # Round-7 low: pinned — with .2 statically assigned to frontend,
+        # a dynamic service could win the race for it on restart and
+        # brick the stack with an address conflict (the round-6
+        # "docker network prune" gotcha). Pin every member; nothing on
+        # this network is addressed by dynamic IP anyway (service DNS).
+        ipv4_address: 172.28.0.3
+      nabla-db: {}
 
   postgres:
     image: pgvector/pgvector:pg16
@@ -141,7 +147,8 @@ services:
         condition: service_healthy
     restart: unless-stopped
     networks:
-      - nabla-backend
+      nabla-backend:
+        ipv4_address: 172.28.0.4
 
   frontend:
     build:
