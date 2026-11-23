@@ -34,7 +34,7 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
 from nabla.log import get_logger
-from nabla.utils import is_routable_ip
+from nabla.utils import esc_block_value, is_routable_ip
 
 if TYPE_CHECKING:
     from nabla.baselines import EntityProfileStore
@@ -386,7 +386,9 @@ def format_anomaly_queue(anomalies: list[dict]) -> str:
         if ts:
             parts.append(f"ts={ts}")
         if user:
-            parts.append(f'user="{user}"')
+            # RR-1: usernames come from logs — a raw " breaks out of
+            # the quoted form; esc_block_value quotes AND escapes.
+            parts.append(f"user={esc_block_value(user, 128)}")
         if a.get("source_ip"):
             parts.append(f"ip={a['source_ip']}")
         if a.get("mitre_ids"):
@@ -394,7 +396,9 @@ def format_anomaly_queue(anomalies: list[dict]) -> str:
         # Truncate details to keep block size manageable
         if details and len(details) > 120:
             details = details[:117] + "..."
-        parts.append(details)
+        # RR-1: escape the details — the ellipsis rides INSIDE the
+        # escaped span (truncate raw first, then escape: T-3)
+        parts.append(esc_block_value(details, 200))
         lines.append(" ".join(parts))
         # Append compact JSON — only essential fields to reduce block size
         json_keys = ["type", "severity", "user", "source_ip", "timestamp",

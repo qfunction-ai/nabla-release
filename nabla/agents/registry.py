@@ -11,6 +11,9 @@ logger = get_logger("registry")
 # Map from role to agent name
 ROLE_NAMES = {
     "supervisor": "nabla-supervisor",
+    # T-1 (round 10): the pipeline review agent. Same persona/model/
+    # blocks as the supervisor; messages reset before every review.
+    "reviewer": "nabla-reviewer",
 }
 
 

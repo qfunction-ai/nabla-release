@@ -10,7 +10,6 @@ from letta_client import Letta
 from nabla.log import get_logger
 from nabla.pipeline.helpers import (
     _extract_host_processes_from_entries,
-    _read_supervisor_blocks,
     _resolve_log_types,
     _resolve_source,
     _filter_watchlist_by_groups,
@@ -192,9 +191,13 @@ def run_ingestion(
     else:
         lolbin_index = None
         try:
-            blocks = _read_supervisor_blocks(client, agents["supervisor"], "lolbin_db")
-            if blocks["lolbin_db"]:
-                lolbin_index = parse_lolbin_block(blocks["lolbin_db"])
+            # RR-2 (round 10): read lolbin_db by label, not via the
+            # supervisor agent's block list.
+            from nabla.blocks import read_shared_block_value
+
+            lolbin_text = read_shared_block_value(client, "lolbin_db")
+            if lolbin_text:
+                lolbin_index = parse_lolbin_block(lolbin_text)
         except Exception as e:
             logger.warning("Could not read lolbin_db block: %s (using fallback LOLBIN data)", e)
 

@@ -405,20 +405,16 @@ def check_ollama():
     typer.echo("\n=== Recommended Ollama Settings ===\n")
     typer.echo("Set these environment variables before starting Ollama:")
     typer.echo(f"  OLLAMA_KEEP_ALIVE={settings.ollama_keep_alive}")
-    typer.echo(f"  OLLAMA_CONTEXT_LENGTH={settings.ollama_context_length}")
     typer.echo(f"  OLLAMA_FLASH_ATTENTION={'1' if settings.ollama_flash_attention else '0'}")
     typer.echo(f"  OLLAMA_MAX_LOADED_MODELS={settings.ollama_max_loaded_models}")
     typer.echo("")
     typer.echo("Why these values:")
     typer.echo("  KEEP_ALIVE=24h — prevents model reloading between pipeline steps (saves 10-30s per step)")
-    typer.echo("  CONTEXT_LENGTH=32768 — agents need more context than default 2048 for tool schemas + memory")
     typer.echo("  FLASH_ATTENTION=1 — reduces memory and improves speed for long contexts")
     typer.echo("  MAX_LOADED_MODELS=2 — keeps LLM + embedding model loaded simultaneously")
 
     # 4. Letta workarounds
     typer.echo("\n=== Letta Workarounds ===\n")
-    typer.echo(f"GLOBAL_MAX_CONTEXT_WINDOW_LIMIT={settings.letta_max_context_window}")
-    typer.echo("  Prevents Letta from capping context below model capability (bug #3279)")
     if settings.letta_compaction_model:
         typer.echo(f"compaction_settings.model={settings.letta_compaction_model}")
         typer.echo("  Fixes tokenizer mismatch during compaction (bug #3270)")

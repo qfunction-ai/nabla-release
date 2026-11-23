@@ -11,7 +11,6 @@ from nabla.degradations import report_degradation
 from nabla.log import get_logger
 from nabla.pipeline.helpers import (
     _read_baseline_host_procs,
-    _read_supervisor_blocks,
 )
 from nabla.pipeline.env_context import (
     _auto_detect_network_ranges,
@@ -106,8 +105,11 @@ def run_detection(
     thresholds = {name: meta[3] for name, meta in _CAL_META.items()}
     thresholds.update(effective_thresholds())
 
-    blocks = _read_supervisor_blocks(client, agents["supervisor"], "lolbin_db")
-    lolbin_db_text = blocks["lolbin_db"]
+    # RR-2 (round 10): read lolbin_db by label — the block is shared
+    # state; no agent carries it in its context window anymore.
+    from nabla.blocks import read_shared_block_value
+
+    lolbin_db_text = read_shared_block_value(client, "lolbin_db")
     lolbin_sigs = _load_lolbin_sigs(lolbin_db_text)
 
     # Read historical baseline for unusual-process detection
@@ -353,6 +355,11 @@ def _write_graph_context_block(client: Letta, agents: dict, result: DetectionRes
             result.graph_context_text = "\n\n".join(graph_context_parts)
             _MAX_GRAPH_CONTEXT = 10_000
             if len(result.graph_context_text) > _MAX_GRAPH_CONTEXT:
+                # T-3: cut at the last line boundary before the cap so
+                # an escape sequence (RR-1) is never sliced in half.
+                cut = result.graph_context_text.rfind("\n", 0, _MAX_GRAPH_CONTEXT)
+                if cut > 0:
+                    _MAX_GRAPH_CONTEXT = cut
                 logger.warning(
                     "Graph context block too large (%d bytes), truncating to %d",
                     len(result.graph_context_text), _MAX_GRAPH_CONTEXT,

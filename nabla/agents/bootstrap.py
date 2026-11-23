@@ -64,12 +64,16 @@ def bootstrap(client: Letta | None = None) -> dict[str, str]:
         except Exception as e:
             logger.warning("Could not enrich attack_mapping with LOLBIN IDs: %s", e)
 
-    # Blocks the supervisor agent needs access to
+    # Blocks the agents need access to. RR-2 (round 10): lolbin_db is
+    # NOT in any agent's list — it is 45K chars of LOLBAS signatures
+    # that only the detection code reads (by label, via
+    # read_shared_block_value). Carrying it on an agent wasted ~11K
+    # tokens of context per call and caused the round-9
+    # CONTEXT_WINDOW_EXCEEDED once the real DB landed.
     supervisor_block_ids = [
         block_ids["ingestion_status"],
         block_ids["threat_findings"],
         block_ids["anomaly_queue"],
-        block_ids["lolbin_db"],
         block_ids["graph_context"],
         block_ids["attack_mapping"],
         block_ids["environment_context"],
@@ -88,11 +92,32 @@ def bootstrap(client: Letta | None = None) -> dict[str, str]:
         context_window_limit=settings.supervisor_context_window,
     )
 
+    # 2b. Reviewer agent (T-1, round 10): the pipeline review and the
+    # chat conversation previously shared ONE agent — every chat turn
+    # was history the reviewer saw, every review was context the chat
+    # dragged around, and a hostile chat user could prime the reviewer.
+    # The reviewer gets the same persona/model/blocks but its messages
+    # reset before every review call (pipeline/supervisor.py).
+    logger.info("Creating reviewer agent...")
+    reviewer_id = create_supervisor(
+        client=client,
+        model=settings.llm_model,
+        embedding=settings.embedding_model,
+        block_ids=supervisor_block_ids,
+        letta_base_url=settings.effective_tool_url,
+        embedding_endpoint=settings.embedding_endpoint,
+        context_window_limit=settings.review_context_window,
+        agent_name="nabla-reviewer",
+        description="Nabla reviewer agent — fresh-context review of pipeline findings",
+        tags=["nabla", "nabla:reviewer"],
+    )
+
     # 3. Letta bug workarounds — set compaction model to match inference model
     # Works around bug #3270: compaction tokenizer mismatch
     compaction_model = settings.letta_compaction_model or settings.llm_model
     logger.info("Setting compaction model workaround (%s)...", compaction_model)
     set_agent_compaction_model(supervisor_id, compaction_model)
+    set_agent_compaction_model(reviewer_id, compaction_model)
 
     # 4. Fix embedding model prefix — Letta SDK adds 'ollama/' but Ollama expects bare name
     # Works around: Ollama /v1/embeddings returns 404 for 'ollama/embeddinggemma:latest'
@@ -107,11 +132,16 @@ def bootstrap(client: Letta | None = None) -> dict[str, str]:
             supervisor_id, embedding_model,
             embedding_endpoint=settings.embedding_endpoint,
         )
+        fix_embedding_model_prefix(
+            reviewer_id, embedding_model,
+            embedding_endpoint=settings.embedding_endpoint,
+        )
 
     logger.info("Bootstrap complete — supervisor: %s", supervisor_id[:8])
 
     return {
         "supervisor": supervisor_id,
+        "reviewer": reviewer_id,
     }
 
 

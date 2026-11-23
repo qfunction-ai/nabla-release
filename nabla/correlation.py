@@ -16,6 +16,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from nabla.log import get_logger
+from nabla.utils import esc_block_value
 
 logger = get_logger("correlation")
 
@@ -29,6 +30,13 @@ _MAX_ANOMALIES_FOR_TIMELINE = 200
 # blocks + persona + tool schemas already consume most of it.  Keep the
 # correlation output under 8K chars to leave room for the LLM to reason.
 _MAX_OUTPUT_CHARS = 8000
+
+# V-1 (round 10): findings-block COUNT cap. The threat_findings block
+# is the review prompt's payload — a run with hundreds of findings
+# would overflow the reviewer's context window. The cap renders the
+# loudest 25 and marks the rest; the overflow is a RECORDED
+# degradation (threat_findings_capped), never silent truncation.
+MAX_BLOCK_FINDINGS = 25
 
 # --- Type labels for timeline narrative ---
 _TYPE_LABELS = {
@@ -745,6 +753,14 @@ def format_findings(
     Returns:
         Formatted text for the threat_findings block.
     """
+    from nabla.degradations import report_degradation
+
+    capped_count = 0
+    if len(findings) > MAX_BLOCK_FINDINGS:
+        capped_count = len(findings) - MAX_BLOCK_FINDINGS
+        report_degradation("threat_findings_capped")
+        findings = findings[:MAX_BLOCK_FINDINGS]
+
     def _baseline_clause(entity: str) -> str:
         if entity_profiles is None:
             return ""
@@ -803,7 +819,11 @@ def format_findings(
         tools_str = ""
         if f.get("tools_detected"):
             tools_str = (
-                f" [Tools: {', '.join(f['tools_detected'])}]"
+                # RR-1: tool names are attacker-influenced (the tertiary
+                # fallback in _extract_tool_names parses them out of
+                # anomaly details) — escape them like every other
+                # log-derived string.
+                f" [Tools: {', '.join(esc_block_value(t, 64) for t in f['tools_detected'])}]"
             )
 
         # FR-3: anomaly IDs — the evidence contract. The model cites
@@ -826,7 +846,8 @@ def format_findings(
         evidence_str = ""
         if anomaly_details:
             excerpts = [
-                anomaly_details[aid][:200]
+                # RR-1: escape the excerpt — truncate-then-escape (T-3)
+                esc_block_value(anomaly_details[aid], 200)
                 for aid in ids[:2]
                 if aid in anomaly_details
             ]
@@ -836,11 +857,19 @@ def format_findings(
         lines.append(
             (
                 f"\n[{f['severity'].upper()}] {f['type']} "
-                f"by {f['entity_type']} {f['entity']}"
+                # RR-1: entity names come from logs (usernames,
+                # hostnames) — escape them.
+                f"by {f['entity_type']} {esc_block_value(f['entity'], 128)}"
                 f"{cross}{attack_str}{tools_str}{graph_str}{ids_str}{evidence_str}"
                 f"{_baseline_clause(f['entity'])} "
                 f"(confidence: {f['confidence']:.0%})"
             )
+        )
+
+    if capped_count:
+        lines.append(
+            f"\n[... {capped_count} more findings capped — "
+            "see run detail for the full list]"
         )
 
     return "".join(lines)

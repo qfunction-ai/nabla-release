@@ -118,8 +118,8 @@ class TestBootstrap:
 
         result = run_bootstrap(mock_client)
         assert "supervisor" in result
-        # Should have called agents.create once (supervisor only)
-        assert mock_client.agents.create.call_count == 1
+        # T-1 (round 10): supervisor + reviewer
+        assert mock_client.agents.create.call_count == 2
 
     @patch("nabla.agents.bootstrap.fix_embedding_model_prefix")
     @patch("nabla.agents.bootstrap.set_agent_compaction_model")
@@ -151,8 +151,8 @@ class TestBootstrap:
         }
 
         run_bootstrap(mock_client)
-        # Compaction model should be set for supervisor only
-        assert mock_compaction.call_count == 1
+        # T-1 (round 10): compaction fix applies to supervisor AND reviewer
+        assert mock_compaction.call_count == 2
 
     @patch("nabla.agents.bootstrap.fix_embedding_model_prefix")
     @patch("nabla.agents.bootstrap.set_agent_compaction_model")
@@ -184,7 +184,8 @@ class TestBootstrap:
         }
 
         run_bootstrap(mock_client)
-        assert mock_embedding.call_count == 1
+        # T-1 (round 10): embedding fix applies to supervisor AND reviewer
+        assert mock_embedding.call_count == 2
 
     @patch("nabla.agents.bootstrap.fix_embedding_model_prefix")
     @patch("nabla.agents.bootstrap.set_agent_compaction_model")
@@ -261,7 +262,7 @@ class TestBootstrap:
     def test_supervisor_receives_all_blocks(
         self, mock_settings, mock_blocks, mock_compaction, mock_embedding, mock_client,
     ):
-        """Supervisor agent should receive all 9 shared blocks."""
+        """Agents receive the 7 shared blocks (lolbin_db detached, RR-2)."""
         mock_settings.return_value = MagicMock(
             llm_model="ollama/gemma4:26b",
             embedding_model="embeddinggemma:latest",
@@ -285,10 +286,14 @@ class TestBootstrap:
 
         run_bootstrap(mock_client)
 
-        # The supervisor receives all 8 blocks (rl_thresholds retired, Phase 3)
+        # RR-2 (round 10): lolbin_db detached — both agents receive 7
+        # blocks (rl_thresholds retired, Phase 3)
         calls = mock_client.agents.create.call_args_list
-        supervisor_calls = [c for c in calls if len(c[1].get("block_ids", [])) == 8]
-        assert len(supervisor_calls) >= 1, "Supervisor should receive all 8 blocks"
+        agent_calls = [c for c in calls if len(c[1].get("block_ids", [])) == 7]
+        assert len(agent_calls) == 2, (
+            f"expected supervisor+reviewer with 7 blocks, got {len(agent_calls)}")
+        for c in agent_calls:
+            assert "b-5" not in c[1]["block_ids"], "lolbin_db still attached"
 
 
 # ── teardown ──

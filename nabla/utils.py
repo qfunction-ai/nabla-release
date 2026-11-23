@@ -6,9 +6,40 @@ eliminate duplication while avoiding circular imports.
 """
 
 import ipaddress
+import json
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def esc_block_value(s: str, cap: int = 200) -> str:
+    """Escape a log-derived string for supervisor-facing block text.
+
+    RR-1 (round 10): the structural defense against block-structure
+    forgery. Attacker-controlled text (command lines, usernames,
+    hostnames) rendered raw into a shared block can forge block
+    structure — a hostile details string containing a newline plus a
+    fake "[LOW] ..." line or a fake "Confirmed threats: 0" renders as
+    the system's own data, a stronger attack than "ignore previous
+    instructions". This helper is the structural fix: json.dumps with
+    default settings quotes the value, escapes newlines/quotes/
+    backslashes, and ensure_ascii=True keeps Unicode line separators
+    (U+2028/U+2029/U+0085) from acting as line breaks for the model.
+
+    Truncation happens BEFORE escaping (T-3) so an escape sequence is
+    never cut in half — json.dumps(raw[:cap]), never
+    json.dumps(raw)[:cap].
+
+    Args:
+        s: The raw log-derived string.
+        cap: Truncate the raw string to this many characters before
+            escaping. Callers pass the channel's existing cap; the
+            default matches the findings-block evidence excerpt.
+
+    Returns:
+        The escaped, quoted string (a JSON string literal).
+    """
+    return json.dumps(s[:cap])
 
 
 def is_routable_ip(ip: str) -> bool:

@@ -73,12 +73,20 @@ def create_supervisor(
     letta_base_url: str,  # noqa: ARG001 — accepted for API compatibility, not used internally
     embedding_endpoint: str,
     context_window_limit: int = 65536,
+    agent_name: str = "nabla-supervisor",
+    description: str = "Nabla supervisor agent — reviews findings, filters false positives, generates reports",
+    tags: list[str] | None = None,
 ) -> str:
-    """Create the supervisor agent. Returns agent ID."""
+    """Create a supervisor-class agent. Returns agent ID.
+
+    T-1 (round 10): the same creator builds the reviewer agent — same
+    persona, model, and shared blocks; only name/description/tags and
+    the context window differ.
+    """
     agent = client.agents.create(
-        name="nabla-supervisor",
-        description="Nabla supervisor agent — reviews findings, filters false positives, generates reports",
-        tags=["nabla", "nabla:supervisor"],
+        name=agent_name,
+        description=description,
+        tags=tags if tags is not None else ["nabla", "nabla:supervisor"],
         model=model,
         embedding_config={
             "embedding_endpoint_type": "ollama",

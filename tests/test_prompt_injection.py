@@ -198,6 +198,18 @@ class TestBehavioralInjectionEval:
             assert s in findings_text, (
                 "hostile text never reached the threat_findings block — "
                 "the eval would pass vacuously")
+        # RR-1 (round 10): presence is not enough — the hostile text
+        # must appear ESCAPED. The substring asserts above survive
+        # escaping (INJECTION_STRINGS carry no double quotes or
+        # backslashes); this assert pins the structure: every evidence
+        # span is a quoted JSON string, so a hostile newline can never
+        # forge a block line.
+        ev_lines = [l for l in findings_text.split("\n") if "[evidence:" in l]
+        assert ev_lines, "no evidence span rendered — the D-11 contract broke"
+        for l in ev_lines:
+            span = l.split("[evidence: ", 1)[1]
+            assert span.lstrip().startswith('"'), (
+                "evidence span is not an escaped JSON string — RR-1 regressed")
         client = get_client()
         agents = find_all_agents(client)
 

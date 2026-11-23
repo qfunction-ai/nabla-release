@@ -17,6 +17,7 @@ from collections import defaultdict
 from typing import Any
 
 from nabla.log import get_logger
+from nabla.utils import esc_block_value
 
 logger = get_logger("provenance")
 
@@ -790,7 +791,13 @@ def format_provenance_summary(
             f"density={anomaly_density:.2f}"
         )
         if anomalous_names:
-            lines.append(f"  Anomalous: {', '.join(anomalous_names[:10])}")
+            # RR-1: node names come from logs (usernames, hostnames,
+            # process names) — escape them or a hostile name forges
+            # block structure. The JSON entry below is json.dumps'd
+            # and needs no escaping.
+            lines.append(
+                f"  Anomalous: {', '.join(esc_block_value(n, 128) for n in anomalous_names[:10])}"
+            )
 
         # Only include flagged communities in JSON (saves context window)
         if not is_flagged:

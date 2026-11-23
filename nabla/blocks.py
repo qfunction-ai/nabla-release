@@ -50,3 +50,40 @@ def get_or_create_shared_blocks(client: Letta) -> dict[str, str]:
             logger.info("Created missing block '%s' (id=%s)", label, block.id)
 
     return existing
+
+
+def find_block_by_label_exact(client: Letta, label: str) -> str | None:
+    """Find the ONE block with this label. Loud on ambiguity (T-5).
+
+    The legacy find_shared_blocks used limit=1 and silently took the
+    first match — a duplicate-label block would shadow the real one
+    with no trace. This helper is the replacement for single-block
+    lookups outside bootstrap: zero matches returns None (callers own
+    the degradation), exactly one returns its id, more than one RAISES
+    because the block identity itself is ambiguous and any silent
+    choice would be wrong some of the time.
+    """
+    blocks = list(client.blocks.list(label=label, limit=10))
+    if not blocks:
+        return None
+    if len(blocks) > 1:
+        raise RuntimeError(
+            f"Multiple blocks share label '{label}' ({len(blocks)} found, ids: "
+            + ", ".join(b.id for b in blocks)
+            + ") — block identity is ambiguous; delete the stale one"
+        )
+    return blocks[0].id
+
+
+def read_shared_block_value(client: Letta, label: str) -> str | None:
+    """Read a shared block's current value by label (exact-match, loud).
+
+    RR-2 companion: detection code reads lolbin_db by label, not via
+    the supervisor agent's block list — the block is shared state, and
+    after the detach no agent carries it in its window.
+    """
+    block_id = find_block_by_label_exact(client, label)
+    if block_id is None:
+        return None
+    block = client.blocks.retrieve(block_id=block_id)
+    return block.value if block is not None else None

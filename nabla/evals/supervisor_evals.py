@@ -66,9 +66,13 @@ def call_supervisor(prompt: str) -> str:
 
     client = get_client()
     agents = find_all_agents(client)
-    supervisor_id = agents.get("supervisor")
+    # T-1 (round 10): eval prompts are review-shaped — use the reviewer
+    # agent with a fresh context, same as the pipeline review path.
+    supervisor_id = agents.get("reviewer") or agents.get("supervisor")
     if not supervisor_id:
-        raise RuntimeError("Supervisor agent not found. Run `nabla bootstrap` first.")
+        raise RuntimeError("No supervisor/reviewer agent found. Run `nabla bootstrap` first.")
+    if "reviewer" in agents:
+        client.agents.messages.reset(agent_id=supervisor_id)
 
     response = client.agents.messages.create(
         agent_id=supervisor_id,

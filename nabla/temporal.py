@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from nabla.log import get_logger
+from nabla.utils import esc_block_value
 
 logger = get_logger("temporal")
 
@@ -708,7 +709,8 @@ def format_temporal_summary(chains: list["TemporalChain"]) -> str:
         # Entity list
         entity_parts = []
         for etype, names in sorted(entity_summary.items()):
-            entity_parts.append(f"{etype}: {', '.join(names[:3])}")
+            # RR-1: entity names come from logs — escape them.
+            entity_parts.append(f"{etype}: {', '.join(esc_block_value(n, 128) for n in names[:3])}")
         if entity_parts:
             lines.append(f"  Entities: {'; '.join(entity_parts)}")
 

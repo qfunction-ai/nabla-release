@@ -761,4 +761,5 @@ class TestExtractToolNames:
             "tools_detected": ["Cobalt Strike", "Rubeus"],
         }]
         text = format_findings(findings)
-        assert "[Tools: Cobalt Strike, Rubeus]" in text
+        # RR-1 (round 10): tool names render as escaped JSON strings
+        assert "[Tools: \"Cobalt Strike\", \"Rubeus\"]" in text

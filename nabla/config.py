@@ -41,12 +41,10 @@ class Settings(BaseSettings):
 
     # ── Ollama (advisory — set on the Ollama host, not here) ──
     ollama_keep_alive: str = "24h"
-    ollama_context_length: int = 32768
     ollama_flash_attention: bool = True
     ollama_max_loaded_models: int = 2
 
     # ── Letta workarounds ─────────────────────────────────────
-    letta_max_context_window: int = 32768
     letta_compaction_model: str = ""  # If set, overrides compaction model to match Ollama model
     # The supervisor agent's context window, passed as context_window_limit
     # at agent creation (the fork honors the caller's value verbatim and
@@ -58,6 +56,15 @@ class Settings(BaseSettings):
     # CONTEXT_WINDOW_EXCEEDED (54,502 > 32,768). 65536 leaves headroom for
     # the blocks + a 27-finding threat_findings + the narrative.
     supervisor_context_window: int = 65536
+
+    # T-1/V-1 (round 10): the reviewer agent gets its OWN window. The
+    # review prompt is bounded by the findings cap (MAX_BLOCK_FINDINGS
+    # in correlation.py) and never carries chat history (messages reset
+    # before every review), so it needs less than the chat agent. The
+    # default matches the chat value until the Phase-5 campaign run
+    # measures the real review prompt; the filming log records the
+    # measurement and the final value lands here.
+    review_context_window: int = 65536
 
     # ── Data directory ────────────────────────────────────────
     data_dir: str = "/data"

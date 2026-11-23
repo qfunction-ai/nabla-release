@@ -79,10 +79,15 @@ def drive_pipeline(entries, tmp_path, monkeypatch, detection_phase="detection",
         "=== UNIX GTFOBINS ===\n"
         "curl | Read | T1105\n"
     )
-    monkeypatch.setattr(pdet, "_read_supervisor_blocks",
-                        lambda client, agent_id, *labels: {
-                            l: (_LOLBIN_BLOCK if l == "lolbin_db" else "")
-                            for l in labels})
+    # RR-2 (round 10): detection reads lolbin_db by label via
+    # read_shared_block_value (no agent carries the block anymore).
+    # The import is function-level from nabla.blocks, so patching the
+    # source module covers both read sites (detection + legacy
+    # ingestion).
+    import nabla.blocks as _nblocks
+    monkeypatch.setattr(_nblocks, "read_shared_block_value",
+                        lambda client, label: (
+                            _LOLBIN_BLOCK if label == "lolbin_db" else None))
 
     # Force detection phase (the course/demo path — fresh instances start
     # baseline and entity detectors are phase-suppressed; the harness tests

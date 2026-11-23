@@ -113,8 +113,32 @@ def run_supervisor(
 
     prompt = build_structured_prompt(findings_count, phase_note, digest_note)
 
+    # T-1 (round 10): the review call goes to the REVIEWER agent, with
+    # its message history reset first — every review sees fresh
+    # context, no chat-turn priming, no cross-review drift. Stacks
+    # bootstrapped before the split have no reviewer and fall back to
+    # the supervisor (with a loud warning — that path carries history).
+    reviewer_id = agents.get("reviewer")
+    if reviewer_id is None:
+        logger.warning(
+            "No reviewer agent found — falling back to the supervisor for "
+            "review. Re-run bootstrap to create the reviewer (reviews will carry "
+            "chat history until then)."
+        )
+        reviewer_id = agents["supervisor"]
+    else:
+        try:
+            client.agents.messages.reset(agent_id=reviewer_id)
+        except Exception as reset_err:
+            # Reset failure must not silently degrade into a history-
+            # carrying review — the whole point of the split is fresh
+            # context. Fail the review loudly; the run records it.
+            raise RuntimeError(
+                f"Could not reset reviewer agent {reviewer_id}: {reset_err}"
+            ) from reset_err
+
     supervisor_response = client.agents.messages.create(
-        agent_id=agents["supervisor"],
+        agent_id=reviewer_id,
         messages=[{
             "role": "user",
             "content": prompt,

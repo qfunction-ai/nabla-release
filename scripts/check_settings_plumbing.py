@@ -34,9 +34,10 @@ INTERNAL_COMPOSE_EXCLUSIONS: set[str] = set()
 OPERATOR_SET: set[str] = {
     # models + Ollama tuning
     "llm_model", "embedding_model", "embedding_endpoint",
-    "ollama_keep_alive", "ollama_context_length", "ollama_flash_attention",
-    "ollama_max_loaded_models", "letta_max_context_window",
+    "ollama_keep_alive", "ollama_flash_attention",
+    "ollama_max_loaded_models",
     "letta_compaction_model", "supervisor_context_window",
+    "review_context_window",
     # setup + dev
     "setup_token", "dev_mode",
     # LettaLocal authentication (M-3, v0.16.38 migration) — one value,
