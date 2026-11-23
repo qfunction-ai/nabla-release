@@ -85,7 +85,7 @@ async def health_check(_auth: None = Depends(require_user)):
         client = get_client()
         resp = client.health()
         result["letta"] = {"healthy": resp.status == "ok", "detail": f"v{resp.version}"}
-    except Exception as e:
+    except Exception:
         result["letta"] = {"healthy": False, "detail": "unreachable"}
 
     # Ollama
@@ -97,7 +97,7 @@ async def health_check(_auth: None = Depends(require_user)):
         url = base + "/api/tags"
         resp = httpx.get(url, timeout=5.0)
         result["ollama"] = {"healthy": resp.status_code == 200}
-    except Exception as e:
+    except Exception:
         result["ollama"] = {"healthy": False, "detail": "unreachable"}
 
     # Data directory

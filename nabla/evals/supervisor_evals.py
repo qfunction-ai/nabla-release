@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 
 from nabla.evals.framework import (
+    SuiteResult,
     LLMJudge,
     NotStringMatching,
     Scenario,

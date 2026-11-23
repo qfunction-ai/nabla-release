@@ -61,6 +61,10 @@ class SupervisorReport(BaseModel):
     attack_techniques: list[ReportTechnique] = []
     recommended_actions: list[str] = []
     claims: list[ReportClaim] = []
+    # Round 8 (N-6): the contradiction safeguard records here — the
+    # model's summary is never edited (D-13). Rendered as a system
+    # banner, distinct from model text.
+    safeguard_note: str | None = None
 
 
 class SupervisorReportMeta(BaseModel):
@@ -75,6 +79,11 @@ class ContributingAnomalyDetail(BaseModel):
     raw_score: float | None = None
     threshold_in_effect: float | None = None
     event_ids: list[str] = []
+    # Round 8 (N-2/P-1): stored entity fields for the D-10 resolver —
+    # resolution is against stored data only, never the report's own list.
+    user: str = ""
+    host: str = ""
+    source_ip: str = ""
 
 
 class MitreTechnique(BaseModel):

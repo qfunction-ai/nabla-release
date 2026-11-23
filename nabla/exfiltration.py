@@ -174,7 +174,6 @@ def _detect_volume_anomaly(
                 net_entries_by_user.setdefault(user, []).append(entry)
 
     for user, user_net in net_entries_by_user.items():
-        count = len(user_net)
         if entity_profiles is None:
             continue
         profile = entity_profiles.get_user(user)
@@ -275,16 +274,6 @@ def _detect_destination_anomaly(
                 user_networks[user].append(entry)
 
     for user, net_entries in user_networks.items():
-        # Get the user's typical destinations from entity profile
-        typical_dests: set[str] = set()
-        typical_ports: set[int] = set()
-        if entity_profiles is not None:
-            profile = entity_profiles.get_user(user)
-            if profile:
-                # UserProfile doesn't have typical_destinations yet —
-                # use IP set as proxy. Host profiles do have destinations.
-                pass
-
         # Get peer group's typical destinations
         peer_dests: set[str] = set()
         if peer_groups is not None:

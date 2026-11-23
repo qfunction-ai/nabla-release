@@ -25,6 +25,8 @@ import dataclasses
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 
+from pathlib import Path
+
 from nabla.log import get_logger
 from nabla.persistence import atomic_write_json
 from nabla.utils import is_off_hours, is_routable_ip
@@ -570,7 +572,6 @@ class EntityProfileStore:
 
     def save(self) -> None:
         """Save all profiles to the JSON file atomically."""
-        from nabla.persistence import atomic_write_json
         data = {
             "users": {k: v.to_dict() for k, v in self.users.items()},
             "hosts": {k: v.to_dict() for k, v in self.hosts.items()},
@@ -1250,7 +1251,6 @@ _TP_HOLD_DAYS = 14.0
 
 
 def _quarantine_file() -> "Path":
-    from pathlib import Path
     from nabla.config import get_settings
     return Path(get_settings().data_dir) / "baseline_quarantine.json"
 
@@ -1333,7 +1333,6 @@ _PENDING_EVENT_CAP = 5000  # N3: per-entity event cap (memory bound)
 
 
 def _pending_file() -> "Path":
-    from pathlib import Path
     from nabla.config import get_settings
     return Path(get_settings().data_dir) / "baseline_pending.json"
 
@@ -1454,7 +1453,6 @@ def approve_pending(entity_id: str) -> int:
 
 
 def _approved_file() -> "Path":
-    from pathlib import Path
     from nabla.config import get_settings
     return Path(get_settings().data_dir) / "baseline_approved.json"
 
@@ -1721,7 +1719,6 @@ def _data_clock_now() -> "datetime":
     try:
         import json as _json
         from nabla.config import get_settings
-        from pathlib import Path
         sp = Path(get_settings().data_dir) / "system_state.json"
         if sp.exists():
             state = _json.loads(sp.read_text())
@@ -1759,36 +1756,13 @@ def quarantine_summary(entity_id: str) -> dict | None:
 
     Single source of truth: the TTL window is computed by the same
     logic _is_quarantined uses (TP holds 14 data-clock days, no-
-    disposition holds 7), never re-derived in the API layer."""
-    from nabla.utils import parse_iso_timestamp
-    q = _load_quarantine()
-    ent = q.get(entity_id)
-    if not ent:
-        return None
-    held = _is_quarantined(entity_id)
-    since = parse_iso_timestamp(ent.get("since", ""))
-    ttl = _TP_HOLD_DAYS if ent.get("tp_hold_days") else _QUARANTINE_TTL_DAYS
-    days_left = None
-    if held and since is not None:
-        age_days = (_data_clock_now() - since).total_seconds() / 86400.0
-        days_left = max(0, round(ttl - age_days))
-    pend = {}
-    held_events = 0
-    try:
-        pend = _load_pending()
-        held_events = sum(len(_batch_entries(b)) for b in pend.get(entity_id, []))
-    except Exception:
-        held_events = 0
-    return {
-        "held": held,
-        "since": ent.get("since"),
-        "days_left": days_left,
-        "tp_hold": bool(ent.get("tp_hold_days")),
-        "batches_held": ent.get("batches_held", 0),
-        "held_batches": len(pend.get(eid, [])),
-        "held_events": held_events,
-        "released_at": ent.get("released_at"),
-    }
+    disposition holds 7), never re-derived in the API layer.
+
+    N-1 (round 8): this function once carried its own copy of the
+    summary logic — and a loop-variable typo (`eid`) the plural never
+    had, which 500'd the detail endpoint for every quarantined entity.
+    One implementation now: the singular delegates to the plural."""
+    return quarantine_summaries([entity_id]).get(entity_id)
 
 
 def quarantine_summaries(entity_ids: list[str]) -> dict[str, dict | None]:
@@ -1821,6 +1795,7 @@ def quarantine_summaries(entity_ids: list[str]) -> dict[str, dict | None]:
             "days_left": days_left,
             "tp_hold": bool(ent.get("tp_hold_days")),
             "batches_held": ent.get("batches_held", 0),
+            "held_batches": len(pend.get(eid, [])),
             "held_events": held_events,
             "released_at": ent.get("released_at"),
         }

@@ -69,7 +69,6 @@ class PipelineRunRequest(BaseModel):
         if v is None:
             return v
         from pathlib import Path
-        from nabla.config import get_settings
         settings = get_settings()
         upload_dir = Path(settings.data_dir).joinpath("uploads").resolve()
         resolved = Path(v).resolve()
@@ -226,7 +225,7 @@ def _run_pipeline_thread(run_id: str, request: PipelineRunRequest) -> None:
 
     try:
         client = get_client()
-        result = run_pipeline(
+        run_pipeline(
             client,
             log_types=request.log_type,
             log_count=request.log_count,

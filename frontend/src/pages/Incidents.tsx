@@ -341,6 +341,7 @@ export default function Incidents() {
  * would be a stored-XSS path.
  */
 function SupervisorReportCard({ detail }: { detail: Incident }) {
+  const navigate = useNavigate();
   const report = detail.supervisor_report;
   const status = detail.review_status;
 
@@ -375,6 +376,17 @@ function SupervisorReportCard({ detail }: { detail: Incident }) {
   return (
     <div className="card" style={{ marginBottom: 16, borderTop: `2px solid ${sevColor}` }}>
       <div className="section-title" data-symbol="∇">SUPERVISOR ANALYSIS</div>
+
+      {/* N-6 (round 8): the contradiction safeguard renders as a system
+          banner, distinct from model text — the summary is never edited */}
+      {report.safeguard_note && (
+        <div
+          className="tag"
+          style={{ display: 'block', marginBottom: 12, padding: '6px 10px', borderColor: 'var(--warning-border)', color: 'var(--warning)' }}
+        >
+          {report.safeguard_note}
+        </div>
+      )}
 
       {/* Summary — plain text, never markdown (R-2) */}
       <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>
@@ -424,16 +436,54 @@ function SupervisorReportCard({ detail }: { detail: Incident }) {
         </div>
       )}
 
-      {/* Claims with resolved evidence — every claim traces (D-10) */}
+      {/* Claims and cited evidence (N-4: the heading asserts nothing;
+          claims without evidence carry a visible NO EVIDENCE CITED chip) */}
       {report.claims.length > 0 && (
         <div className="entity-field">
-          <div className="field-label">CLAIMS — EVERY CLAIM TRACES TO STORED EVIDENCE</div>
+          <div className="field-label">CLAIMS AND CITED EVIDENCE</div>
           {report.claims.map((claim, i) => (
             <div key={i} style={{ marginBottom: 8 }}>
               <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{claim.text}</div>
               <div className="chip-row" style={{ marginTop: 4 }}>
+                {claim.evidence.length === 0 && (
+                  <span
+                    className="tag"
+                    title="This claim cites no evidence — treat as unsupported"
+                    style={{ borderColor: 'var(--warning-border)', color: 'var(--warning)' }}
+                  >
+                    NO EVIDENCE CITED
+                  </span>
+                )}
                 {claim.evidence.map((ev, j) => (
-                  ev.resolved ? (
+                  ev.resolved && (ev.kind === 'entity_id' || ev.kind === 'anomaly_id') ? (
+                    /* N-4 (round 8): resolved chips CLICK THROUGH — entity
+                       refs to the entity view, anomaly refs to the run. */
+                    <span
+                      className="tag"
+                      key={j}
+                      role="link"
+                      tabIndex={0}
+                      style={{ cursor: 'pointer', textDecoration: 'underline dotted' }}
+                      title={`${ev.kind}: ${ev.ref}${ev.raw_score !== null && ev.raw_score !== undefined ? ` · raw ${ev.raw_score}` : ''}${ev.threshold_in_effect !== null && ev.threshold_in_effect !== undefined ? ` / thr ${ev.threshold_in_effect}` : ''} — click to open`}
+                      onClick={() =>
+                        ev.kind === 'entity_id'
+                          ? navigate(`/entities?entity=${encodeURIComponent(ev.ref)}`)
+                          : navigate(`/pipeline?run=${encodeURIComponent(detail.run_id)}`)
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          ev.kind === 'entity_id'
+                            ? navigate(`/entities?entity=${encodeURIComponent(ev.ref)}`)
+                            : navigate(`/pipeline?run=${encodeURIComponent(detail.run_id)}`);
+                        }
+                      }}
+                    >
+                      {ev.method ? `${ev.method} · ${ev.ref.slice(0, 8)}` : `${ev.kind} · ${ev.ref.slice(0, 12)}`}
+                      {ev.raw_score !== null && ev.raw_score !== undefined && (
+                        <span style={{ color: 'var(--text-tertiary)' }}> raw {ev.raw_score}{ev.threshold_in_effect !== null && ev.threshold_in_effect !== undefined ? ` / thr ${ev.threshold_in_effect}` : ''}</span>
+                      )}
+                    </span>
+                  ) : ev.resolved ? (
                     <span
                       className="tag"
                       key={j}

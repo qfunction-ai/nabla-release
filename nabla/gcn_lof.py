@@ -669,7 +669,6 @@ class GCNLOFDetector:
         embeddings = self._encode(features_with_lof, adj_norm)
         reconstructed = self._reconstruct(embeddings)
         recon_error = self._compute_reconstruction_error(features_with_lof, reconstructed)
-        norm_recon = _normalize_scores(recon_error)
 
         # Step 8: Combined anomaly score (A12: HISTORICAL anchoring, not
         # per-batch min-max — every batch has a 1.0 by construction under

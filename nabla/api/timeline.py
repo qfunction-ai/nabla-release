@@ -77,7 +77,6 @@ async def get_entity_timeline(
             from nabla.history import list_runs
             runs = list_runs(limit=10)
             for run in runs:
-                run_id = run.get("run_id", "")
                 # Anomalies are stored in the run's anomaly list
                 anomalies = run.get("anomalies", [])
                 for a in anomalies:

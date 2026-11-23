@@ -180,7 +180,11 @@ def build_lolbin_index(data: dict) -> dict:
             if mid:
                 mitre_ids.add(mid)
 
-        for det in entry.get("Detection", []):
+        # Round 8: upstream LOLBAS entries can carry "Detection": null
+        # (e.g. Ngen.exe) — one malformed entry must not kill the whole
+        # index (it left the supervisor block "not loaded", which silently
+        # disabled lolbin detection on the stack).
+        for det in entry.get("Detection") or []:
             for key, val in det.items():
                 if key in ("Sigma", "Splunk", "Elastic") and val:
                     # Extract rule name from URL

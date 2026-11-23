@@ -950,6 +950,21 @@ export interface components {
              * @default []
              */
             event_ids: string[];
+            /**
+             * User
+             * @default
+             */
+            user: string;
+            /**
+             * Host
+             * @default
+             */
+            host: string;
+            /**
+             * Source Ip
+             * @default
+             */
+            source_ip: string;
         };
         /** EntityListResponse */
         EntityListResponse: {
@@ -1680,6 +1695,8 @@ export interface components {
              * @default []
              */
             claims: components["schemas"]["ReportClaim"][];
+            /** Safeguard Note */
+            safeguard_note?: string | null;
         };
         /** SupervisorReportMeta */
         SupervisorReportMeta: {

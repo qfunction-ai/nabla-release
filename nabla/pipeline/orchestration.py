@@ -115,6 +115,15 @@ def _compact_anomaly(a: dict) -> dict:
         # N10/A4: the threshold the method was using when it fired —
         # raw_score vs threshold_in_effect is the honest calibration view.
         "threshold_in_effect": _threshold_in_effect_for(a),
+        # Round 8 (N-2/P-1): entity fields the incident build captures at
+        # save time for the D-10 resolver. The detectors EMIT these (S2
+        # dual attribution), but the old compactor stripped them — the
+        # resolver's entity set was empty beyond the incident's own entity,
+        # so claims citing the victim host or attacker IP showed
+        # UNRESOLVED on camera.
+        "user": str(a.get("user", a.get("entity", "")))[:120],
+        "host": str(a.get("host", ""))[:200],
+        "source_ip": str(a.get("source_ip", ""))[:64],
     }
 
 

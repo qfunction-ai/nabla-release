@@ -34,6 +34,9 @@ jobs:
       - name: Settings plumbing guard (N8)
         run: python scripts/check_settings_plumbing.py
 
+      - name: Lint (P-2 — undefined names / unused / redefinitions)
+        run: ruff check --select F821,F841,F811 nabla/
+
       - name: Identity check (R-13 — salted, fail-closed)
         env:
           NABLA_IDENTITY_CHECK_SALT: ${{ secrets.NABLA_IDENTITY_CHECK_SALT }}

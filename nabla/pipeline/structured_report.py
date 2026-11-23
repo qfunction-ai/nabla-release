@@ -103,42 +103,73 @@ def build_structured_prompt(findings_count: int, phase_note: str, digest_note: s
 # Parsing — per-element, never repairs
 # ---------------------------------------------------------------------------
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_ARRAY_START_RE = re.compile(r"\[")
+_ARRAY_START_RE = re.compile(r"\[\s*\{")
+
+
+def _validates_as_report(el: Any) -> bool:
+    """True when the element is a JSON object that passes IncidentReport
+    validation — the qualification rule for candidate arrays."""
+    if not isinstance(el, dict):
+        return False
+    try:
+        IncidentReport.model_validate(el)
+    except ValidationError:
+        return False
+    return True
 _HEXBLOB_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def extract_json_array(text: str) -> list[Any] | None:
-    """Best-effort array extraction: fences stripped, outermost [] found.
+    """Element-wise array extraction (round 8, N-3 — FR-1 honored).
 
-    Returns None when no complete array parses — truncation included.
-    Never repairs or synthesizes elements.
+    Old behavior: first '[' to last ']', one json.loads over the whole
+    span. One syntax error anywhere — a truncated tail, a prose bracket
+    like the [anomaly_ids: ...] the prompt itself teaches — discarded
+    EVERY report in the run.
+
+    New behavior:
+    - Array starts are '[' followed by optional whitespace and '{'.
+      A prose [anomaly_ids: ...] bracket never matches.
+    - Elements decode one at a time (json.JSONDecoder.raw_decode).
+      Complete elements survive a truncated tail; the tail is flagged,
+      never synthesized.
+    - Candidate arrays are scanned in order; the first with at least
+      one element that validates as an IncidentReport wins. (The plan
+      review said "first element validates"; taken literally one
+      malformed opening element would discard the whole run — the N-3
+      disease again. "At least one valid element" is FR-1-consistent.)
+      An example array in prose that doesn't validate as a report is
+      skipped; the real array wins.
+
+    Returns (elements, note). note is set when the array was truncated
+    or unterminated — the incomplete tail is flagged, never synthesized.
+    Returns (None, None) when no candidate qualifies.
     """
     if not text or not text.strip():
-        return None
-    candidates: list[str] = []
-    m = _FENCE_RE.search(text)
-    if m:
-        candidates.append(m.group(1))
-    candidates.append(text)
-    # Outermost bracket span: first '[' to last ']'. A truncated array
-    # has no closing ']' after the last element, so the span either
-    # fails json.loads or loads a PREFIX slice — the per-element
-    # validation below is what catches mid-element truncation.
-    for cand in candidates:
-        start = cand.find("[")
-        end = cand.rfind("]")
-        if start >= 0 and end > start:
+        return None, None
+    dec = json.JSONDecoder()
+    n = len(text)
+    for m in _ARRAY_START_RE.finditer(text):
+        i = m.start() + 1  # past the '['
+        elements: list[Any] = []
+        note: str | None = None
+        while True:
+            while i < n and text[i] in " \t\r\n,":
+                i += 1
+            if i >= n:
+                note = "unterminated array"
+                break  # unterminated: elements decoded so far stand
+            if text[i] == "]":
+                break
             try:
-                parsed = json.loads(cand[start : end + 1])
+                el, i = dec.raw_decode(text, i)
             except json.JSONDecodeError:
-                # silent by design: candidate loop tries the next
-                # extraction strategy — failure is reported by the
-                # caller when NO candidate parses (2026-11-23)
-                continue
-            if isinstance(parsed, list):
-                return parsed
-    return None
+                note = "truncated or malformed tail"
+                break  # truncated/malformed tail: keep what parsed
+            elements.append(el)
+        if any(_validates_as_report(el) for el in elements):
+            return elements, note
+    return None, None
 
 
 def parse_reports(text: str) -> dict[str, Any]:
@@ -158,10 +189,15 @@ def parse_reports(text: str) -> dict[str, Any]:
         "parse_error": None,
         "array_len": None,
     }
-    arr = extract_json_array(text or "")
+    arr, array_note = extract_json_array(text or "")
     if arr is None:
         meta["parse_error"] = "no complete JSON array in supervisor output"
         return meta
+    if array_note:
+        # Truncated/unterminated array: the complete elements above stand;
+        # the note flags the incomplete tail (FR-1 — never discarded,
+        # never synthesized).
+        meta["parse_error"] = array_note
     meta["array_len"] = len(arr)
     for i, el in enumerate(arr):
         if not isinstance(el, dict):
@@ -246,11 +282,17 @@ def resolve_report(report: dict[str, Any], incident: dict[str, Any]) -> dict[str
     for d in details:
         for eid in d.get("event_ids") or []:
             event_ids.add(eid)
-    entity_names = {
-        str(incident.get("entity", "")),
-        *(incident.get("entities") or []),
-        *(report.get("entities") or []),
-    }
+    # N-2 (round 8): resolution set is STORED DATA ONLY — the incident's
+    # entity plus the user/host/source_ip captured on each anomaly
+    # detail at save time (P-1). The report's own `entities` list is the
+    # model's output: letting it participate means a fabricated entity
+    # the model lists and cites comes back "verified" — D-10 defeated.
+    entity_names = {str(incident.get("entity", ""))}
+    for d in details:
+        for key in ("user", "host", "source_ip"):
+            v = str(d.get(key) or "").strip()
+            if v:
+                entity_names.add(v)
     entity_names.discard("")
 
     known_ids = _attack_technique_ids()
@@ -319,19 +361,19 @@ def attach_structured_reports(
 
     # Deterministic safeguard on each structured summary: a report that
     # claims no threats against confirmed findings gets the truth
-    # prepended — the pipeline's findings are authoritative.
+    # recorded in its own field — the pipeline's findings are
+    # authoritative, and the model's summary is never edited (D-13).
     for rep in reports:
         if findings_count > 0 and summary_contradicts(rep.get("summary", "")):
             logger.warning(
                 "Structured report for %s contradicts findings count (%d): "
-                "prepending deterministic summary",
+                "recording safeguard note",
                 rep.get("entity"), findings_count,
             )
-            header = (
+            rep["safeguard_note"] = (
                 f"DETERMINISTIC NOTE: the pipeline confirmed {findings_count} "
-                "threat(s) — the summary below contradicts them.\n"
+                "threat(s) — the summary contradicts them."
             )
-            rep["summary"] = header + (rep.get("summary") or "")
 
     # Index reports for matching.
     def _report_evidence_ids(rep: dict) -> set[str]:
@@ -342,25 +384,40 @@ def attach_structured_reports(
                     ids.add(ev.strip())
         return ids
 
+    # N-5 (round 8): one report, one incident. The old loop let each
+    # incident independently pick its best report, so a report whose
+    # evidence overlapped two incidents attached to BOTH — one narrative
+    # shown as each incident's own (the R-1 disease). Greedy one-to-one:
+    # every (incident, report) pair scored, strongest overlap assigned
+    # first, each report used at most once. Ties keep run order
+    # (stable sort) — deterministic.
     unmatched: list[str] = []
-    matched: set[int] = set()  # ids of report dicts that matched an incident
-    for inc in incidents:
+    pairs: list[tuple[int, int, int]] = []  # (score, incident_idx, report_idx)
+    for ii, inc in enumerate(incidents):
         inc_ids = {a for a in (inc.get("contributing_anomaly_ids") or []) if a}
         entity = str(inc.get("entity", ""))
-        best = None
-        best_score = -1
-        for rep in reports:
+        for ri, rep in enumerate(reports):
             score = len(inc_ids & _report_evidence_ids(rep))
             if score == 0 and str(rep.get("entity", "")) == entity:
                 score = 1  # entity fallback
-            if score > best_score:
-                best_score = score
-                best = rep
-        if best is not None and best_score > 0:
-            resolved = resolve_report(best, inc)
+            if score > 0:
+                pairs.append((score, ii, ri))
+    pairs.sort(key=lambda p: -p[0])
+
+    assigned_report: dict[int, int] = {}   # incident_idx -> report_idx
+    used_reports: set[int] = set()
+    for score, ii, ri in pairs:
+        if ii in assigned_report or ri in used_reports:
+            continue
+        assigned_report[ii] = ri
+        used_reports.add(ri)
+
+    for ii, inc in enumerate(incidents):
+        ri = assigned_report.get(ii)
+        if ri is not None:
+            resolved = resolve_report(reports[ri], inc)
             inc["supervisor_report"] = resolved
             inc["review_status"] = "ok"
-            matched.add(id(best))
             inc["supervisor_report_meta"] = {
                 "invalid_elements": len(meta["invalid"]),
                 "parse_error": meta["parse_error"],
@@ -374,8 +431,8 @@ def attach_structured_reports(
                 "reason": "no valid report matched this incident",
             }
 
-    for rep in reports:
-        if id(rep) not in matched:
+    for ri, rep in enumerate(reports):
+        if ri not in used_reports:
             unmatched.append(str(rep.get("entity", "?")))
     if unmatched:
         logger.info("Structured reports unmatched to any incident: %s", unmatched)

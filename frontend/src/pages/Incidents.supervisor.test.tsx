@@ -14,7 +14,7 @@ type Incident = components['schemas']['IncidentResponse'];
 const baseIncident: Incident = {
   incident_id: 'a1b2c3d4-0000-0000-0000-000000000001',
   run_id: 'run-1',
-  entity: 'jdoe2',
+  entity: 'helpdeskone',
   entity_type: 'user',
   finding_type: 'lolbin',
   severity: 'high',
@@ -37,10 +37,10 @@ const okReport: Incident = {
   ...baseIncident,
   review_status: 'ok',
   supervisor_report: {
-    entity: 'jdoe2',
+    entity: 'helpdeskone',
     summary: 'True positive: certutil downloaded payloads.',
     severity: 'high',
-    entities: ['jdoe2', 'WKSTN-04'],
+    entities: ['helpdeskone', 'WKSTN-04'],
     attack_techniques: [
       { id: 'T1105', known: true },
       { id: 'T9999', known: false },
@@ -88,6 +88,57 @@ describe('SupervisorReportCard (Phase 3, R-1/FR-1/D-10)', () => {
     vi.clearAllMocks();
   });
 
+  describe('round 8 (N-4/N-6)', () => {
+    it('claims without evidence carry a visible NO EVIDENCE CITED chip; heading asserts nothing', async () => {
+      await openDetail({
+        ...okReport,
+        supervisor_report: {
+          ...okReport.supervisor_report!,
+          claims: [{ text: 'an unsupported assertion', evidence: [] }],
+        },
+      });
+      expect(screen.getByText('CLAIMS AND CITED EVIDENCE')).toBeInTheDocument();
+      expect(screen.queryByText(/EVERY CLAIM TRACES/)).not.toBeInTheDocument();
+      expect(screen.getByText('NO EVIDENCE CITED')).toBeInTheDocument();
+    });
+
+    it('safeguard_note renders as a banner; the summary is untouched', async () => {
+      await openDetail({
+        ...okReport,
+        supervisor_report: {
+          ...okReport.supervisor_report!,
+          safeguard_note: 'DETERMINISTIC NOTE: the pipeline confirmed 3 threat(s).',
+        },
+      });
+      expect(screen.getByText(/DETERMINISTIC NOTE/)).toBeInTheDocument();
+      expect(screen.getByText('True positive: certutil downloaded payloads.')).toBeInTheDocument();
+    });
+
+    it('resolved entity and anomaly chips click through (N-4 links)', async () => {
+      await openDetail({
+        ...okReport,
+        supervisor_report: {
+          ...okReport.supervisor_report!,
+          claims: [
+            {
+              text: 'both cited',
+              evidence: [
+                { ref: '4d8ea52907a0310e', resolved: true, kind: 'anomaly_id', method: 'lolbin', raw_score: 16, threshold_in_effect: 3.0 },
+                { ref: 'helpdeskone', resolved: true, kind: 'entity_id' },
+              ],
+            },
+          ],
+        },
+      });
+      const anomalyChip = screen.getByText(/lolbin · 4d8ea529/);
+      expect(anomalyChip.getAttribute('role')).toBe('link');
+      fireEvent.click(anomalyChip);
+      expect(screen.getByText(/lolbin · 4d8ea529/)).toBeInTheDocument(); // still rendered
+      const entityChip = screen.getByText(/entity_id · helpdeskone/);
+      expect(entityChip.getAttribute('role')).toBe('link');
+    });
+  });
+
   it('renders the structured report: summary, claims, evidence chips with scores', async () => {
     await openDetail(okReport);
     expect(screen.getByText('True positive: certutil downloaded payloads.')).toBeInTheDocument();
@@ -127,8 +178,8 @@ describe('SupervisorReportCard (Phase 3, R-1/FR-1/D-10)', () => {
         <Incidents />
       </MemoryRouter>,
     );
-    await waitFor(() => expect(screen.getByText('jdoe2')).toBeInTheDocument());
-    fireEvent.click(screen.getByText('jdoe2'));
+    await waitFor(() => expect(screen.getByText('helpdeskone')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('helpdeskone'));
     await waitFor(() => expect(screen.getByText('INCIDENT DETAIL')).toBeInTheDocument());
     expect(screen.queryByText('SUPERVISOR ANALYSIS')).not.toBeInTheDocument();
   });
@@ -141,7 +192,7 @@ describe('SupervisorReportCard (Phase 3, R-1/FR-1/D-10)', () => {
       ...baseIncident,
       review_status: 'ok',
       supervisor_report: {
-        entity: 'jdoe2',
+        entity: 'helpdeskone',
         summary: '<script>alert(1)</script> **bold** [link](http://evil)',
         severity: 'high',
         entities: ['<img src=x onerror=alert(2)>'],

@@ -101,6 +101,11 @@ class TestResolver:
                     "raw_score": 2.51,
                     "threshold_in_effect": 2.0,
                     "event_ids": [EID],
+                    # Round 8 (N-2/P-1): entity fields captured at save
+                    # time — the resolution set is stored data only.
+                    "user": "admin_user",
+                    "host": "WKSTN-04",
+                    "source_ip": "",
                 },
                 {
                     "anomaly_id": AID2,
@@ -212,7 +217,9 @@ class TestAttach:
         attach_structured_reports([inc], "", findings_count=1)
         assert inc["review_status"] == "absent"
 
-    def test_contradiction_prepends_deterministic_note(self, monkeypatch):
+    def test_contradiction_records_safeguard_note(self, monkeypatch):
+        """Round 8 (N-6): the note lives in safeguard_note; the model's
+        summary is never edited (D-13)."""
         monkeypatch.setattr(
             "nabla.pipeline.structured_report._attack_technique_ids",
             lambda: {"T1059"},
@@ -220,8 +227,9 @@ class TestAttach:
         inc = self._incident()
         rep = _report(summary="No threats detected; all clear.")
         attach_structured_reports([inc], _valid_text(rep), findings_count=1)
-        assert "DETERMINISTIC NOTE" in inc["supervisor_report"]["summary"]
-        assert "1" in inc["supervisor_report"]["summary"]
+        assert inc["supervisor_report"]["summary"] == "No threats detected; all clear."
+        assert "DETERMINISTIC NOTE" in inc["supervisor_report"]["safeguard_note"]
+        assert "1" in inc["supervisor_report"]["safeguard_note"]
 
     def test_summary_contradicts_patterns(self):
         assert summary_contradicts("Overall: no threats detected today")

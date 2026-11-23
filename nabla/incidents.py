@@ -320,6 +320,16 @@ def save_incidents(
                         # resolves evidence refs of kind event_id against
                         # these; capped to bound the record size.
                         "event_ids": (a.get("event_ids") or [])[:10],
+                        # Round 8 (N-2/P-1): entity fields captured from the
+                        # run anomaly at save time. The D-10 resolver resolves
+                        # entity references ONLY against stored data — the
+                        # report's own entity list must never make its
+                        # citations resolve. Without these fields a correct
+                        # claim citing the victim host or attacker IP would
+                        # show UNRESOLVED on camera.
+                        "user": a.get("user", a.get("entity", "")),
+                        "host": a.get("host", ""),
+                        "source_ip": a.get("source_ip", ""),
                     }
                     for a in (run_anomalies or [])
                     if a.get("entity", a.get("user")) == entity

@@ -169,6 +169,24 @@ def status():
         mark = "✓" if result else "✗ FAILED"
         typer.echo(f"  {mark} {name}")
 
+    # Show system phase (restored from the orphaned tail the ruff sweep
+    # found stranded after _detector_self_test's return — 81b80e7)
+    blocks = info.get("blocks", {})
+    blocks.pop("system_phase", "detection")
+    blocks.pop("first_ingestion_at", None)
+    blocks.pop("baseline_days_remaining", None)
+    warm_up = blocks.pop("warm_up", None)
+
+    from nabla.system_state import load_system_state, format_phase_summary
+    settings = get_settings()
+    sys_state = load_system_state(settings.system_state_file)
+    typer.echo(f"\n{format_phase_summary(sys_state, warm_up)}")
+
+    typer.echo("\n=== Shared Blocks ===")
+    for label, value in info.get("blocks", {}).items():
+        typer.echo(f"\n--- {label} ---")
+        typer.echo(value)
+
 
 def _detector_self_test() -> list[tuple[str, bool]]:
     """Smoke-call optional detection layers with a two-entry payload.
@@ -219,23 +237,6 @@ def _detector_self_test() -> list[tuple[str, bool]]:
     _check("temporal", _temporal)
     _check("exfiltration", _exfil)
     return results
-
-    # Show system phase
-    blocks = info.get("blocks", {})
-    blocks.pop("system_phase", "detection")
-    blocks.pop("first_ingestion_at", None)
-    blocks.pop("baseline_days_remaining", None)
-    warm_up = blocks.pop("warm_up", None)
-
-    from nabla.system_state import load_system_state, format_phase_summary
-    settings = get_settings()
-    sys_state = load_system_state(settings.system_state_file)
-    typer.echo(f"\n{format_phase_summary(sys_state, warm_up)}")
-
-    typer.echo("\n=== Shared Blocks ===")
-    for label, value in info.get("blocks", {}).items():
-        typer.echo(f"\n--- {label} ---")
-        typer.echo(value)
 
 
 @app.command()
@@ -1148,7 +1149,7 @@ def ingest(
                         except Exception:
                             pass  # silent by design: unparseable line in span scan (2026-09 sweep)
 
-            results = run_pipeline(
+            run_pipeline(
                 client,
                 source="file",
                 file_path=sub,
@@ -1234,7 +1235,6 @@ def _verify_scenario(scenario_path: str):
         entity = exp.get("entity", "?")
         want_types = set(exp.get("expected_detectors", []))
         hits = actual_by_entity.get(entity, [])
-        hit_types = {a.get("finding_type", "") for a in hits}
         # Match if any expected detector appears in any incident type for the entity
         entity_types = set()
         for a in hits:

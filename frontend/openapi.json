@@ -1675,6 +1675,21 @@
             "type": "array",
             "title": "Event Ids",
             "default": []
+          },
+          "user": {
+            "type": "string",
+            "title": "User",
+            "default": ""
+          },
+          "host": {
+            "type": "string",
+            "title": "Host",
+            "default": ""
+          },
+          "source_ip": {
+            "type": "string",
+            "title": "Source Ip",
+            "default": ""
           }
         },
         "type": "object",
@@ -3009,6 +3024,17 @@
             "type": "array",
             "title": "Claims",
             "default": []
+          },
+          "safeguard_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Safeguard Note"
           }
         },
         "type": "object",
