@@ -59,12 +59,18 @@ def run_correlation(
     blocks = _read_supervisor_blocks(client, agents["supervisor"], "attack_mapping")
     attack_mapping_text = blocks["attack_mapping"]
 
-    result.findings_text, result.timeline_text, result.findings, result.correlations, result.attack_lookup, findings_shown = _run_correlation(
+    output = _run_correlation(
         entity_profiles=entity_profiles,
         anomalies=anomalies,
         graph_context_text=graph_context_text,
         attack_mapping_text=attack_mapping_text,
     )
+    result.findings_text = output.findings_text
+    result.timeline_text = output.timeline_text
+    result.findings = output.findings
+    result.correlations = output.correlations
+    result.attack_lookup = output.attack_lookup
+    findings_shown = output.shown_findings
 
     # F-1 (round 11): the count is a VALUE from the correlation step —
     # never regexed out of block text. findings_count is the TRUE count

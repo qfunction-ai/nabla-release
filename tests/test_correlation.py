@@ -562,12 +562,15 @@ class TestHelpers:
 
 class TestRunCorrelation:
     def test_empty(self):
-        findings, timeline, f_list, corrs, lookup = run_correlation([])
-        assert findings == "Confirmed threats: none"
-        assert timeline == "No anomalies found."
-        assert f_list == []
-        assert corrs == []
-        assert lookup == {}
+        """G-1 witness (round 12): the empty path returns the
+        CorrelationOutput dataclass — no positional arity left to drift."""
+        out = run_correlation([])
+        assert out.findings_text == "Confirmed threats: none"
+        assert out.timeline_text == "No anomalies found."
+        assert out.findings == []
+        assert out.correlations == []
+        assert out.attack_lookup == {}
+        assert out.shown_findings == []
 
     def test_with_anomalies(self):
         anomalies = [
@@ -593,7 +596,8 @@ class TestRunCorrelation:
                 "details": "Activity during off-hours",
             },
         ]
-        findings, timeline, _, _, _, _shown = run_correlation(anomalies)
+        out = run_correlation(anomalies)
+        findings, timeline = out.findings_text, out.timeline_text
         assert "Confirmed threats:" in findings
         assert len(timeline) > 50  # Should produce a narrative
 
@@ -626,7 +630,8 @@ class TestRunCorrelation:
             "brute_force_attempt:\n"
             "  T1110 | Brute Force | credential-access"
         )
-        findings, timeline, _, _, _, _shown = run_correlation(anomalies, attack_mapping_text=attack_mapping)
+        out = run_correlation(anomalies, attack_mapping_text=attack_mapping)
+        findings, timeline = out.findings_text, out.timeline_text
         assert "T1218" in findings or "T1110" in findings
 
     def test_with_graph_context(self):
@@ -670,7 +675,8 @@ class TestRunCorrelation:
             }],
         }
         graph_text = f"Context:\nJSON:{json.dumps(graph_data)}"
-        findings, timeline, _, _, _, _shown = run_correlation(anomalies, graph_context_text=graph_text)
+        out = run_correlation(anomalies, graph_context_text=graph_text)
+        findings, timeline = out.findings_text, out.timeline_text
         # Should have graph community and/or temporal chain enrichment
         assert "Community" in findings or "Chain" in findings or "Confirmed threats" in findings
 

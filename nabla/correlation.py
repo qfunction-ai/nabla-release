@@ -13,10 +13,33 @@ instead of thousands of raw anomalies.
 import json
 import re
 from collections import defaultdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from nabla.log import get_logger
 from nabla.utils import esc_block_value
+
+
+@dataclass
+class CorrelationOutput:
+    """Return value of run_correlation (round 12, G-1).
+
+    Named fields, NOT a positional tuple: round 11 grew the return from
+    5 to 6 values and missed the early return — every zero-anomaly run
+    crashed on the 6-unpack (the ba33b11 review's G-1). A dataclass
+    makes that bug class unrepresentable; the AST witness in
+    tests/test_rr12_g1_arity.py asserts every return constructs one.
+
+    Field names are deliberately distinct from the pipeline's
+    CorrelationResult (whose findings_shown is an int COUNT): the list
+    of findings that reached the block/prompt is shown_findings.
+    """
+    findings_text: str = ""
+    timeline_text: str = ""
+    findings: list = field(default_factory=list)      # FULL assessed list
+    correlations: list = field(default_factory=list)
+    attack_lookup: dict = field(default_factory=dict)
+    shown_findings: list = field(default_factory=list)  # capped subset
 
 logger = get_logger("correlation")
 
@@ -1431,7 +1454,10 @@ def run_correlation(
         capped subset that reached the block/prompt.
     """
     if not anomalies:
-        return "Confirmed threats: none", "No anomalies found.", [], [], {}
+        return CorrelationOutput(
+            findings_text="Confirmed threats: none",
+            timeline_text="No anomalies found.",
+        )
 
     # Parse graph context
     entity_communities, entity_chains, _, _ = parse_graph_context(graph_context_text)
@@ -1508,4 +1534,11 @@ def run_correlation(
             len(findings_text), len(timeline_text), _MAX_OUTPUT_CHARS,
         )
 
-    return findings_text, timeline_text, findings, correlations, attack_lookup, findings_shown
+    return CorrelationOutput(
+        findings_text=findings_text,
+        timeline_text=timeline_text,
+        findings=findings,
+        correlations=correlations,
+        attack_lookup=attack_lookup,
+        shown_findings=findings_shown,
+    )

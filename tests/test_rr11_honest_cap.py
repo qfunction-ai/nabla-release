@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from nabla.correlation import (
+    CorrelationOutput,
     correlate_anomalies,
     assess_findings,
     run_correlation as correlate_run,
@@ -69,9 +70,13 @@ class TestTrueCountSurvivesTheCap:
             graph_context_text=GRAPH_CTX,
             attack_mapping_text=ATTACK_MAP,
         )
-        # 6-tuple: text, timeline, findings(FULL), correlations, lookup, shown
-        assert len(result) == 6, f"expected 6-tuple, got {len(result)}"
-        findings_text, _timeline, findings, _corrs, _lookup, shown = result
+        # CorrelationOutput (round 12 G-1): named fields, no positional arity
+        assert isinstance(result, CorrelationOutput), (
+            f"expected CorrelationOutput, got {type(result).__name__}"
+        )
+        findings_text = result.findings_text
+        findings = result.findings
+        shown = result.shown_findings
         assert len(findings) == 27, "the FULL list must survive for save_incidents"
         assert len(shown) == 25, "the cap shows 25"
         assert "Confirmed threats: 27" in findings_text, "header must carry the TRUE count"
@@ -101,7 +106,7 @@ class TestCapKeepsTheLoudest:
             graph_context_text=GRAPH_CTX,
             attack_mapping_text=ATTACK_MAP,
         )
-        findings_text = result[0]
+        findings_text = result.findings_text
         assert "user26" in findings_text, (
             "the CRITICAL finding (last in input order) must survive the cap"
         )
@@ -122,7 +127,7 @@ class TestCapIsDeterministic:
             entity_profiles=None, anomalies=list(anomalies),
             graph_context_text=GRAPH_CTX, attack_mapping_text=ATTACK_MAP,
         )
-        text1, text2 = r1[0], r2[0]
+        text1, text2 = r1.findings_text, r2.findings_text
         set1 = set(re.findall(r'user\d\d', text1))
         set2 = set(re.findall(r'user\d\d', text2))
         assert set1 == set2, (
