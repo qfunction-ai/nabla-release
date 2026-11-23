@@ -468,13 +468,13 @@ function SupervisorReportCard({ detail }: { detail: Incident }) {
                       onClick={() =>
                         ev.kind === 'entity_id'
                           ? navigate(`/entities?entity=${encodeURIComponent(ev.ref)}`)
-                          : navigate(`/pipeline?run=${encodeURIComponent(detail.run_id)}`)
+                          : navigate(`/pipeline?run=${encodeURIComponent(detail.run_id)}&anomaly=${encodeURIComponent(ev.ref)}`)
                       }
                       onKeyDown={(e) => {
                         if (e.key === 'Enter' || e.key === ' ') {
                           ev.kind === 'entity_id'
                             ? navigate(`/entities?entity=${encodeURIComponent(ev.ref)}`)
-                            : navigate(`/pipeline?run=${encodeURIComponent(detail.run_id)}`);
+                            : navigate(`/pipeline?run=${encodeURIComponent(detail.run_id)}&anomaly=${encodeURIComponent(ev.ref)}`);
                         }
                       }}
                     >

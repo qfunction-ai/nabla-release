@@ -16,8 +16,25 @@ def _runs_file() -> str | None:
 
 
 def _load_runs(path: str) -> list[dict[str, Any]]:
-    """Load all runs from the JSON file."""
-    return load_json_safe(path, default=[])
+    """Load all runs from the JSON file, deduped by run_id (R9-2).
+
+    The pipeline saves each run twice — Step 4b (pre-incident, so incidents
+    can link) and completion. save_run used to append unconditionally, so
+    every run was double-listed: the run list showed doubles on camera,
+    and anything counting runs walked the file double. Loading keeps the
+    LAST record per run_id (the completion record), which also
+    self-heals legacy files on their next save.
+    """
+    runs = load_json_safe(path, default=[])
+    last_pos: dict[str, int] = {}
+    for i, r in enumerate(runs):
+        rid = r.get("run_id")
+        if rid:
+            last_pos[rid] = i
+    if len(last_pos) == len(runs):
+        return runs  # already unique — the common case
+    return [r for i, r in enumerate(runs)
+            if not r.get("run_id") or last_pos[r.get("run_id")] == i]
 
 
 
@@ -91,7 +108,7 @@ MAX_RUNS = 200
 
 
 def save_run(run: dict[str, Any]) -> None:
-    """Append a run record to the history file, trimming to MAX_RUNS.
+    """Upsert a run record into the history file, trimming to MAX_RUNS.
 
     Uses file locking to prevent data loss from concurrent writes.
     Oldest runs are dropped once the cap is exceeded.
@@ -104,6 +121,9 @@ def save_run(run: dict[str, Any]) -> None:
 
     with file_lock(path):
         runs = _load_runs(path)
+        rid = run.get("run_id")
+        if rid:
+            runs = [r for r in runs if r.get("run_id") != rid]
         runs.append(run)
         if len(runs) > MAX_RUNS:
             runs = runs[-MAX_RUNS:]

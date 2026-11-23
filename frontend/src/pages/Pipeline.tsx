@@ -281,7 +281,7 @@ export default function Pipeline() {
                     {expandedRun === run.run_id && (
                       <tr key={`${run.run_id}-detail`}>
                         <td colSpan={7} style={{ background: 'var(--bg-secondary)', padding: '12px 16px' }}>
-                          <RunDetailPanel detail={runDetail} />
+                          <RunDetailPanel detail={runDetail} highlightAnomaly={searchParams.get('anomaly')} />
                         </td>
                       </tr>
                     )}
@@ -303,10 +303,42 @@ export default function Pipeline() {
  * event_ids (N7). Old runs (pre-UI-2/UI-4 data) degrade gracefully
  * with explicit labels.
  */
-function RunDetailPanel({ detail }: { detail: RunRecord | null }) {
+function RunDetailPanel({
+  detail,
+  highlightAnomaly,
+}: {
+  detail: RunRecord | null;
+  highlightAnomaly?: string | null;
+}) {
+  // C-3 (round 9): anomaly deep-link target. Hooks must run before the
+  // early return (rules of hooks).
+  const highlightRef = useRef<HTMLTableRowElement | null>(null);
+  const [anomalyNotice, setAnomalyNotice] = useState<string | null>(null);
+  const anomalies = detail?.anomalies ?? [];
+  const targetIdx = highlightAnomaly
+    ? anomalies.findIndex((a) => (a.anomaly_id || '').startsWith(highlightAnomaly))
+    : -1;
+  useEffect(() => {
+    if (!detail || !highlightAnomaly) return;
+    if (targetIdx === -1) {
+      // Honest beyond-summary case (the run record's anomaly list is
+      // capped): say so instead of quietly highlighting nothing.
+      setAnomalyNotice(
+        `anomaly not in this run's summary, ID ${highlightAnomaly}`,
+      );
+      return;
+    }
+    setAnomalyNotice(null);
+    highlightRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail, highlightAnomaly]);
+
   if (!detail) return <div className="loading">Loading run detail…</div>;
 
   const hasDetailedData = detail.findings !== undefined || detail.anomalies !== undefined;
+  // The table shows the first 12 rows; a deep-linked target beyond the
+  // slice expands the slice to include it (the user asked for it by ID).
+  const visibleAnomalyCount = targetIdx >= 12 ? targetIdx + 1 : 12;
   const steps = detail.step_durations
     ? Object.entries(detail.step_durations).sort(([, a], [, b]) => b - a)
     : [];
@@ -402,6 +434,18 @@ function RunDetailPanel({ detail }: { detail: RunRecord | null }) {
       {detail.anomalies && detail.anomalies.length > 0 && (
         <div>
           <div className="method-label">Anomalies ({detail.anomalies.length} — detectors fired before correlation)</div>
+          {anomalyNotice && (
+            <div
+              style={{
+                fontFamily: 'var(--font-display)',
+                fontSize: 11,
+                color: 'var(--warning, #f59e0b)',
+                marginBottom: 4,
+              }}
+            >
+              {anomalyNotice}
+            </div>
+          )}
           <div className="table-container" style={{ border: '1px solid var(--border)' }}>
             <table>
               <thead>
@@ -415,8 +459,21 @@ function RunDetailPanel({ detail }: { detail: RunRecord | null }) {
                 </tr>
               </thead>
               <tbody>
-                {detail.anomalies.slice(0, 12).map((a, i) => (
-                  <tr key={a.anomaly_id || i}>
+                {detail.anomalies.slice(0, visibleAnomalyCount).map((a, i) => (
+                  <tr
+                    key={a.anomaly_id || i}
+                    ref={highlightAnomaly && (a.anomaly_id || '').startsWith(highlightAnomaly) ? highlightRef : undefined}
+                    data-anomaly-highlight={
+                      highlightAnomaly && (a.anomaly_id || '').startsWith(highlightAnomaly)
+                        ? highlightAnomaly
+                        : undefined
+                    }
+                    style={
+                      highlightAnomaly && (a.anomaly_id || '').startsWith(highlightAnomaly)
+                        ? { background: 'var(--danger-subtle)', outline: '1px solid var(--accent)' }
+                        : undefined
+                    }
+                  >
                     <td style={{ color: 'var(--accent)', fontFamily: 'var(--font-display)' }}>{a.entity || '—'}</td>
                     <td style={{ fontFamily: 'var(--font-display)' }}>{a.detection_method}</td>
                     <td style={{ fontFamily: 'var(--font-display)', color: a.raw_score != null ? 'var(--danger)' : 'var(--text-tertiary)' }}>

@@ -67,9 +67,22 @@ def drive_pipeline(entries, tmp_path, monkeypatch, detection_phase="detection",
     class _Client:
         agents = _Agents()
 
-    # Patch the block reads (lolbin db empty; thresholds from calibration)
+    # Patch the block reads. Q-1: the lolbin block must be POPULATED —
+    # an empty block now raises `lolbin_index_not_loaded` (detection on
+    # fallback data must say so), which would trip the harness's
+    # no-degradations assertions. The harness runs the production-shaped
+    # "db" state.
+    _LOLBIN_BLOCK = (
+        "=== WINDOWS LOLBINS ===\n"
+        "certutil | Download, Encode | T1105, T1140\n"
+        "mshta | Execute | T1218\n"
+        "=== UNIX GTFOBINS ===\n"
+        "curl | Read | T1105\n"
+    )
     monkeypatch.setattr(pdet, "_read_supervisor_blocks",
-                        lambda client, agent_id, *labels: {l: "" for l in labels})
+                        lambda client, agent_id, *labels: {
+                            l: (_LOLBIN_BLOCK if l == "lolbin_db" else "")
+                            for l in labels})
 
     # Force detection phase (the course/demo path — fresh instances start
     # baseline and entity detectors are phase-suppressed; the harness tests

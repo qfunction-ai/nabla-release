@@ -724,13 +724,23 @@ def assess_findings(
 # Formatting — write findings to block text
 # ---------------------------------------------------------------------------
 
-def format_findings(findings: list[dict], entity_profiles=None) -> str:
+def format_findings(
+    findings: list[dict],
+    entity_profiles=None,
+    anomalies: list[dict] | None = None,
+) -> str:
     """Format findings as text for the threat_findings block.
 
     Args:
         findings: List of finding dicts from assess_findings.
         entity_profiles: Optional EntityProfileStore — adds a compact
             baseline clause to findings whose entity is warm (UI2b).
+        anomalies: Optional anomaly list — adds a compact evidence
+            excerpt (the contributing anomalies' details, capped) to
+            each finding. D-11 (round 9): without this, the command
+            lines — where injected instructions live — never reached
+            the supervisor, so the narrative could not report the
+            attempt.
 
     Returns:
         Formatted text for the threat_findings block.
@@ -757,6 +767,14 @@ def format_findings(findings: list[dict], entity_profiles=None) -> str:
         return f" [baseline: {'; '.join(parts)}]" if parts else ""
     if not findings:
         return "Confirmed threats: none"
+
+    # D-11: anomaly_id -> details map for the evidence excerpts
+    anomaly_details = {}
+    if anomalies is not None:
+        for a in anomalies:
+            aid = a.get("anomaly_id")
+            if aid and a.get("details"):
+                anomaly_details[aid] = str(a["details"])
 
     lines = [f"Confirmed threats: {len(findings)}"]
     for f in findings:
@@ -798,11 +816,28 @@ def format_findings(findings: list[dict], entity_profiles=None) -> str:
             more = f" (+{len(ids) - 8} more)" if len(ids) > 8 else ""
             ids_str = f" [anomaly_ids: {shown}{more}]"
 
+        # D-11 (round 9): compact evidence excerpt — up to 2
+        # contributing anomalies' details, capped. This is where
+        # command lines (and any injected instructions inside them)
+        # reach the supervisor. Bounded: 2 x 200 chars per finding
+        # (200 keeps a full urlcache command line with an appended
+        # instruction legible — a shorter cap cuts the tail, which is
+        # exactly where injected text rides).
+        evidence_str = ""
+        if anomaly_details:
+            excerpts = [
+                anomaly_details[aid][:200]
+                for aid in ids[:2]
+                if aid in anomaly_details
+            ]
+            if excerpts:
+                evidence_str = " [evidence: " + " | ".join(excerpts) + "]"
+
         lines.append(
             (
                 f"\n[{f['severity'].upper()}] {f['type']} "
                 f"by {f['entity_type']} {f['entity']}"
-                f"{cross}{attack_str}{tools_str}{graph_str}{ids_str}"
+                f"{cross}{attack_str}{tools_str}{graph_str}{ids_str}{evidence_str}"
                 f"{_baseline_clause(f['entity'])} "
                 f"(confidence: {f['confidence']:.0%})"
             )
@@ -1349,7 +1384,9 @@ def run_correlation(
     findings = assess_findings(correlations, attack_lookup)
 
     # Format
-    findings_text = format_findings(findings, entity_profiles=entity_profiles)
+    findings_text = format_findings(
+        findings, entity_profiles=entity_profiles, anomalies=anomalies
+    )
 
     # Build timeline from a severity-stratified subset to keep output small
     from nabla.utils import SEVERITY_ORDER

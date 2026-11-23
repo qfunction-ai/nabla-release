@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import Incidents from './Incidents';
 import type { components } from '../types/api';
 
@@ -208,5 +208,50 @@ describe('SupervisorReportCard (Phase 3, R-1/FR-1/D-10)', () => {
     // and no script/img element was created from them
     expect(document.querySelector('script')).toBeNull();
     expect(document.querySelector('img')).toBeNull();
+  });
+});
+
+describe('round 9 (C-3): anomaly chips deep-link with the anomaly param', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('an anomaly chip navigates to /pipeline?run=<id>&anomaly=<anomaly_id>', async () => {
+    let lastPath = '';
+    let lastSearch = '';
+    const LocationSpy = () => {
+      const loc = useLocation();
+      lastPath = loc.pathname;
+      lastSearch = loc.search;
+      return null;
+    };
+    const detail: Incident = {
+      ...okReport,
+      run_id: 'phase1001-rest',
+      supervisor_report: {
+        ...okReport.supervisor_report!,
+        claims: [
+          {
+            text: 'cited',
+            evidence: [
+              { ref: '4d8ea52907a0310e', resolved: true, kind: 'anomaly_id', method: 'lolbin', raw_score: 16, threshold_in_effect: 3.0 },
+            ],
+          },
+        ],
+      },
+    };
+    mockIncidents(detail);
+    render(
+      <MemoryRouter initialEntries={['/incidents']}>
+        <Incidents />
+        <LocationSpy />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText(detail.entity)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(detail.entity));
+    await waitFor(() => expect(screen.getByText('SUPERVISOR ANALYSIS')).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/lolbin · 4d8ea529/));
+    expect(lastPath).toBe('/pipeline');
+    expect(lastSearch).toBe('?run=phase1001-rest&anomaly=4d8ea52907a0310e');
   });
 });

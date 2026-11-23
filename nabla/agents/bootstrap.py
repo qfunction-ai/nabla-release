@@ -85,6 +85,7 @@ def bootstrap(client: Letta | None = None) -> dict[str, str]:
         block_ids=supervisor_block_ids,
         letta_base_url=settings.effective_tool_url,
         embedding_endpoint=settings.embedding_endpoint,
+        context_window_limit=settings.supervisor_context_window,
     )
 
     # 3. Letta bug workarounds — set compaction model to match inference model

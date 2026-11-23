@@ -283,18 +283,26 @@ def _contributing_ids(entries: list[dict], cap: int = 50) -> list[str]:
     return out[:cap]
 
 
-def parse_lolbin_block(block_text: str) -> list[tuple[str, list[str], list[str]]]:
+def parse_lolbin_block(
+    block_text: str,
+) -> tuple[list[tuple[str, list[str], list[str]]], str]:
     """Parse the lolbin_db block text into LOLBIN signatures.
 
     Args:
         block_text: Text from the lolbin_db shared block.
 
     Returns:
-        List of (process_name, command_patterns, mitre_ids) tuples.
+        (sigs, source) where sigs is a list of (process_name,
+        command_patterns, mitre_ids) tuples and source is "db" when the
+        block parsed to real signatures or "fallback" when detection will
+        run on FALLBACK_LOLBIN_SIGS instead (Q-1: the caller must raise a
+        run degradation in that case — the round-8 exit gate found
+        production lolbin had run on the 9-entry fallback since deployment
+        with zero degradations fired).
     """
     sigs = []
     if not block_text:
-        return sigs
+        return list(FALLBACK_LOLBIN_SIGS), "fallback"
 
     in_windows = False
     for line in block_text.strip().split("\n"):
@@ -328,7 +336,9 @@ def parse_lolbin_block(block_text: str) -> list[tuple[str, list[str], list[str]]
             if cat_patterns:
                 sigs.append((name, cat_patterns, mitre_ids))
 
-    return sigs if sigs else list(FALLBACK_LOLBIN_SIGS)
+    if sigs:
+        return sigs, "db"
+    return list(FALLBACK_LOLBIN_SIGS), "fallback"
 
 
 def format_anomaly_queue(anomalies: list[dict]) -> str:

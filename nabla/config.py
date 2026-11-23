@@ -48,6 +48,16 @@ class Settings(BaseSettings):
     # ── Letta workarounds ─────────────────────────────────────
     letta_max_context_window: int = 32768
     letta_compaction_model: str = ""  # If set, overrides compaction model to match Ollama model
+    # The supervisor agent's context window, passed as context_window_limit
+    # at agent creation (the fork honors the caller's value verbatim and
+    # forwards it to Ollama as num_ctx). Round 9, found live at the Phase-5
+    # exit gate: without this the agent's llm_config resolved to 32768,
+    # and the round-8 lolbin fix (the real 246-entry DB in the lolbin_db
+    # block, ~45K chars) pushed the system prompt past the window on any
+    # large incident — the fork rejected the supervisor call with
+    # CONTEXT_WINDOW_EXCEEDED (54,502 > 32,768). 65536 leaves headroom for
+    # the blocks + a 27-finding threat_findings + the narrative.
+    supervisor_context_window: int = 65536
 
     # ── Data directory ────────────────────────────────────────
     data_dir: str = "/data"

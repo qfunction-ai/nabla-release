@@ -18,21 +18,24 @@ from nabla.utils import is_routable_ip
 # --- parse_lolbin_block ---
 
 def test_parse_lolbin_block_empty():
-    """Empty block text returns empty list."""
-    sigs = parse_lolbin_block("")
-    assert sigs == []
+    """Empty block text: fallback sigs, source says so (Q-1)."""
+    sigs, source = parse_lolbin_block("")
+    assert source == "fallback"
+    assert len(sigs) > 0
 
 
 def test_parse_lolbin_block_none():
-    """None block text returns empty list."""
-    sigs = parse_lolbin_block(None)
-    assert sigs == []
+    """None block text: fallback sigs, source says so (Q-1)."""
+    sigs, source = parse_lolbin_block(None)
+    assert source == "fallback"
+    assert len(sigs) > 0
 
 
 def test_parse_lolbin_block_with_data():
     """Block with Windows LOLBIN data returns parsed signatures."""
     text = "=== WINDOWS LOLBINS ===\ncertutil | Download, Encode | T1105, T1140"
-    sigs = parse_lolbin_block(text)
+    sigs, source = parse_lolbin_block(text)
+    assert source == "db"
     assert len(sigs) >= 1
     # Check first sig
     name, patterns, mitre = sigs[0]
@@ -44,7 +47,8 @@ def test_parse_lolbin_block_with_data():
 def test_parse_lolbin_block_fallback():
     """Block with only Unix data returns fallback signatures."""
     text = "=== UNIX GTFOBINS ===\npython | shell | T1059"
-    sigs = parse_lolbin_block(text)
+    sigs, source = parse_lolbin_block(text)
+    assert source == "fallback"
     # Should fall back to FALLBACK_LOLBIN_SIGS since no Windows entries
     assert len(sigs) > 0
 

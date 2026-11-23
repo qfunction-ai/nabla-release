@@ -147,3 +147,71 @@ describe('Pipeline page — Phase 1 run detail (A3/A4/N7)', () => {
     });
   });
 });
+
+describe('Pipeline page — round 9 (C-3 anomaly deep-link)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('anomaly chips land on the run with ?anomaly= — the row highlights and scrolls', async () => {
+    await setupMock();
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    render(
+      <MemoryRouter initialEntries={['/pipeline?run=phase1001&anomaly=a1']}>
+        <Pipeline />
+      </MemoryRouter>
+    );
+    // run auto-expands from ?run=; detail loads; the targeted row is marked
+    await waitFor(() => {
+      const row = screen.getByText('entity_z_score').closest('tr');
+      expect(row?.getAttribute('data-anomaly-highlight')).toBe('a1');
+    });
+    expect(scrollIntoView).toHaveBeenCalled();
+  });
+
+  it('a target beyond the rendered slice is still shown (slice expands to it)', async () => {
+    await setupMock();
+    const many = Array.from({ length: 20 }, (_, k) => ({
+      anomaly_id: `a${k}`, entity: 'u', entity_type: 'user',
+      severity: 'low', timestamp: '2026-11-20T05:00:30Z',
+      detection_method: `method_${k}`, details: 'd',
+      categories: [], mitre_attack: [],
+      raw_score: 1.0, event_ids: [], threshold_in_effect: 2.0,
+    }));
+    const { apiFetch } = await import('../lib/api');
+    (apiFetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url.includes('/status')) {
+        return Promise.resolve({ running: false, run_id: null, started_at: null, current_step: null, last_run: null });
+      }
+      if (url.includes('/history')) {
+        return Promise.resolve({ runs: [runFull], total: 1, limit: 20, offset: 0 });
+      }
+      return Promise.resolve({ ...runFull, anomalies: many });
+    });
+    Element.prototype.scrollIntoView = vi.fn();
+    render(
+      <MemoryRouter initialEntries={['/pipeline?run=phase1001&anomaly=a17']}>
+        <Pipeline />
+      </MemoryRouter>
+    );
+    await waitFor(() => {
+      const row = screen.getByText('method_17').closest('tr');
+      expect(row?.getAttribute('data-anomaly-highlight')).toBe('a17');
+    });
+  });
+
+  it('an anomaly not in the run summary gets the honest notice, not silence', async () => {
+    await setupMock();
+    render(
+      <MemoryRouter initialEntries={['/pipeline?run=phase1001&anomaly=zzzzmissing']}>
+        <Pipeline />
+      </MemoryRouter>
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByText(/anomaly not in this run's summary, ID zzzzmissing/)
+      ).toBeInTheDocument();
+    });
+  });
+});

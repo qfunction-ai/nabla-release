@@ -36,7 +36,7 @@ OPERATOR_SET: set[str] = {
     "llm_model", "embedding_model", "embedding_endpoint",
     "ollama_keep_alive", "ollama_context_length", "ollama_flash_attention",
     "ollama_max_loaded_models", "letta_max_context_window",
-    "letta_compaction_model",
+    "letta_compaction_model", "supervisor_context_window",
     # setup + dev
     "setup_token", "dev_mode",
     # LettaLocal authentication (M-3, v0.16.38 migration) — one value,

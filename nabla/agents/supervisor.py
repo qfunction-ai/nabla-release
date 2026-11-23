@@ -72,6 +72,7 @@ def create_supervisor(
     block_ids: list[str],
     letta_base_url: str,  # noqa: ARG001 — accepted for API compatibility, not used internally
     embedding_endpoint: str,
+    context_window_limit: int = 65536,
 ) -> str:
     """Create the supervisor agent. Returns agent ID."""
     agent = client.agents.create(
@@ -88,6 +89,12 @@ def create_supervisor(
         system=PERSONA,
         block_ids=block_ids,
         include_base_tools=False,
+        # Round 9: without an explicit window the fork resolved this
+        # agent's llm_config to 32768 and the supervisor call died on
+        # CONTEXT_WINDOW_EXCEEDED once the lolbin_db block carried the
+        # real DB. The fork honors context_window_limit verbatim and
+        # forwards it to Ollama as num_ctx.
+        context_window_limit=context_window_limit,
     )
 
     return agent.id

@@ -52,6 +52,19 @@ class DetectionResult:
     explanation_text: str = ""
 
 
+def _load_lolbin_sigs(lolbin_db_text: str) -> list[tuple[str, list[str], list[str]]]:
+    """Q-1: parse lolbin sigs and degrade loudly when on fallback data.
+
+    The check keys on the parse SOURCE — never on the block's text. A
+    text-marker check lies in both directions (fires on cosmetic format
+    changes, stays silent on a marker-present-but-empty section).
+    """
+    from nabla.detection import parse_lolbin_block
+    sigs, source = parse_lolbin_block(lolbin_db_text)
+    if source == "fallback":
+        report_degradation("lolbin_index_not_loaded")
+    return sigs
+
 def run_detection(
     client: Letta,
     agents: dict[str, str],
@@ -81,9 +94,10 @@ def run_detection(
     logger.info("Anomaly Detection: analyzing %d log entries...", len(all_entries))
 
     from nabla.detection import (
-        detect_anomalies, parse_lolbin_block,
+        detect_anomalies,
         format_anomaly_queue,
     )
+
 
     # Thresholds from the CALIBRATION STORE (Phase 3 closed loop): the
     # calibrated currents layered over THRESHOLDS defaults. The Letta
@@ -94,7 +108,7 @@ def run_detection(
 
     blocks = _read_supervisor_blocks(client, agents["supervisor"], "lolbin_db")
     lolbin_db_text = blocks["lolbin_db"]
-    lolbin_sigs = parse_lolbin_block(lolbin_db_text)
+    lolbin_sigs = _load_lolbin_sigs(lolbin_db_text)
 
     # Read historical baseline for unusual-process detection
     baseline_host_procs = _read_baseline_host_procs()
