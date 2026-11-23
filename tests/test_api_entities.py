@@ -2,6 +2,7 @@
 
 import json
 import os
+import pathlib
 
 import pytest
 
@@ -194,3 +195,85 @@ class TestGetEntity:
         data = resp.json()
         assert "environment_facts" in data
         assert data["environment_facts"] == ["Service account for CI/CD"]
+
+
+class TestPhase2MachineAndQuarantine:
+    """Phase 2 (mockup 04): the entities list carries the machine-
+    account flag (F5/N9 — the SAME predicate baselining uses) and the
+    quarantine state with its data-clock TTL (N3/N5)."""
+
+    def _profiles(self, tmp):
+        _write_profiles(tmp, {
+            "users": {
+                "alice": {"observation_count": 5, "first_seen": "2025-01-01", "last_seen": "2025-01-02", "typical_ips": [], "ewma": {}, "account_created_at": None},
+                "svc-jenkins": {"observation_count": 50, "first_seen": "2025-01-01", "last_seen": "2025-01-02", "typical_ips": [], "ewma": {}, "account_created_at": None},
+            },
+            "hosts": {}, "ips": {},
+        })
+
+    def test_machine_account_flagged(self, app_client, temp_data_dir):
+        self._profiles(temp_data_dir)
+        data = app_client.get("/api/entities").json()
+        flags = {e["id"]: e["is_machine"] for e in data["entities"]}
+        assert flags["svc-jenkins"] is True
+        assert flags["alice"] is False
+
+    def test_quarantine_none_when_absent(self, app_client, temp_data_dir):
+        self._profiles(temp_data_dir)
+        data = app_client.get("/api/entities").json()
+        assert all(e["quarantine"] is None for e in data["entities"])
+
+    def test_quarantine_state_in_list(self, app_client, temp_data_dir):
+        """TP hold anchored 1 day before the data clock (wall fallback)
+        -> held with 13 data-clock days left."""
+        import json as _json
+        from datetime import datetime, timedelta, timezone
+        self._profiles(temp_data_dir)
+        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        pathlib.Path(os.path.join(temp_data_dir, "baseline_quarantine.json")).write_text(_json.dumps({
+            "alice": {"held": True, "since": since, "batches_held": 2, "tp_hold_days": 14},
+        }))
+        data = app_client.get("/api/entities").json()
+        q = {e["id"]: e["quarantine"] for e in data["entities"]}["alice"]
+        assert q is not None and q["held"] is True
+        assert q["tp_hold"] is True
+        assert q["days_left"] == 13
+        assert q["batches_held"] == 2
+
+    def test_expired_hold_reads_not_held(self, app_client, temp_data_dir):
+        """A hold older than its TTL is NOT held — the summary must say
+        so (the UI shows ACTIVE, and the pipeline re-arms on new fire)."""
+        import json as _json
+        from datetime import datetime, timedelta, timezone
+        self._profiles(temp_data_dir)
+        since = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        pathlib.Path(os.path.join(temp_data_dir, "baseline_quarantine.json")).write_text(_json.dumps({
+            "alice": {"held": True, "since": since, "batches_held": 1},
+        }))
+        data = app_client.get("/api/entities").json()
+        q = {e["id"]: e["quarantine"] for e in data["entities"]}["alice"]
+        assert q["held"] is False
+        assert q["days_left"] is None
+
+    def test_held_events_counted_from_pending_store(self, app_client, temp_data_dir):
+        import json as _json
+        from datetime import datetime, timedelta, timezone
+        self._profiles(temp_data_dir)
+        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        pathlib.Path(os.path.join(temp_data_dir, "baseline_quarantine.json")).write_text(_json.dumps({
+            "alice": {"held": True, "since": since, "batches_held": 1},
+        }))
+        pathlib.Path(os.path.join(temp_data_dir, "baseline_pending.json")).write_text(_json.dumps({
+            "alice": [{"batch_uid": "b1", "source_kind": "file", "entries": [{"event_id": f"e{i}"} for i in range(20)]}],
+        }))
+        data = app_client.get("/api/entities").json()
+        q = {e["id"]: e["quarantine"] for e in data["entities"]}["alice"]
+        assert q["held_events"] == 20
+
+    def test_detail_carries_machine_and_quarantine(self, app_client, temp_data_dir):
+        self._profiles(temp_data_dir)
+        d1 = app_client.get("/api/entities/svc-jenkins").json()
+        assert d1["is_machine"] is True
+        assert d1["quarantine"] is None
+        d2 = app_client.get("/api/entities/alice").json()
+        assert d2["is_machine"] is False

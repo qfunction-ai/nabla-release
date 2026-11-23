@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
+import { runDuration } from '../lib/runs';
 
 interface RunRecord {
   run_id: string;
   started_at: string | null;
-  duration_ms: number | null;
   anomaly_count: number;
   findings_count: number;
   success: boolean;
@@ -121,7 +121,7 @@ export default function Dashboard() {
         <div className="stat-card" role="button" tabIndex={0} onClick={() => navigate(`/pipeline?run=${lastRun ? lastRun.run_id.slice(0, 8) : ''}`)} onKeyDown={(e) => e.key === 'Enter' && navigate(`/pipeline?run=${lastRun ? lastRun.run_id.slice(0, 8) : ''}`)}>
           <div className="stat-number">{lastRun ? lastRun.anomaly_count : '—'}</div>
           <div className="stat-label">Anomalies (last run)</div>
-          <div className="stat-formula"><code>{lastRun ? `${lastRun.findings_count} findings · ${lastRun.duration_ms ? Math.round(lastRun.duration_ms / 1000) + 's' : '—'}` : 'no runs yet'}</code></div>
+          <div className="stat-formula"><code>{lastRun ? `${lastRun.findings_count} findings · ${runDuration(lastRun) ? runDuration(lastRun) + 's' : '—'}` : 'no runs yet'}</code></div>
         </div>
         <div className="stat-card" role="button" tabIndex={0} onClick={() => navigate('/entities?sort=risk')} onKeyDown={(e) => e.key === 'Enter' && navigate('/entities?sort=risk')}>
           <div className="stat-number">{peakRisk > 0 ? peakRisk.toFixed(0) : '—'}</div>
@@ -214,7 +214,7 @@ export default function Dashboard() {
                   <tr key={i}>
                     <td style={{ color: 'var(--accent)' }}>{run.run_id.slice(0, 8)}</td>
                     <td>{run.started_at ? new Date(run.started_at).toLocaleString() : '—'}</td>
-                    <td>{run.duration_ms ? `${Math.round(run.duration_ms / 1000)}s` : '—'}</td>
+                    <td>{runDuration(run) ? `${runDuration(run)}s` : '—'}</td>
                     <td>{run.anomaly_count}</td>
                     <td>{run.findings_count}</td>
                     <td>

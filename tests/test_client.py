@@ -65,12 +65,17 @@ class TestGetClient:
 
         get_client()
         call_kwargs = mock_letta_cls.call_args.kwargs
-        assert call_kwargs.get("token") == "test-key-123"
+        # M-1: the real kwarg is api_key. The old assertion checked
+        # "token" — a kwarg that does not exist on letta-client 1.10.3;
+        # the MagicMock accepted it, so the test enshrined the bug it
+        # should have caught. The real-constructor witness is
+        # tests/test_letta_client.py::test_w1.
+        assert call_kwargs.get("api_key") == "test-key-123"
 
     @patch("nabla.client.Letta")
     @patch("nabla.client.get_settings")
     def test_client_without_api_key(self, mock_settings, mock_letta_cls):
-        """Client omits token when no API key configured."""
+        """Client omits api_key when no API key configured."""
         mock_settings_obj = MagicMock()
         mock_settings_obj.letta_base_url = "http://localhost:8283"
         mock_settings_obj.letta_api_key = None
@@ -81,7 +86,7 @@ class TestGetClient:
 
         get_client()
         call_kwargs = mock_letta_cls.call_args.kwargs
-        assert "token" not in call_kwargs
+        assert "api_key" not in call_kwargs
 
 
 class TestResetClient:

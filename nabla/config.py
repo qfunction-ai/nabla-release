@@ -14,6 +14,11 @@ class Settings(BaseSettings):
     # ── Letta server ──────────────────────────────────────────
     letta_base_url: str = "http://localhost:8284"
     letta_api_key: str = ""  # If set, passed to Letta client for API authentication
+    # F-1: shipped ATT&CK STIX bundle (course fixtures) — when set and the
+    # file exists, bootstrap uses it instead of the pinned download, so
+    # snapshot builds never depend on GitHub. Hash-verified against
+    # ATTACK_STIX_SHA256 either way.
+    attack_bundle_local_path: str = ""
     tool_letta_url: str = ""  # Override for cross-agent tool access
 
     # ── Authentication ────────────────────────────────────────

@@ -443,15 +443,10 @@ VALID_DISPOSITIONS = {"true_positive", "benign_true_positive", "false_positive"}
 
 
 def _threshold_in_effect_for(anomaly: dict) -> float | None:
-    """The calibrated value of the anomaly's method's threshold at fire time."""
-    try:
-        from nabla.rl.calibration import METHOD_TO_THRESHOLD, effective_thresholds
-        tname = METHOD_TO_THRESHOLD.get(anomaly.get("detection_method", ""))
-        if not tname:
-            return None
-        return effective_thresholds().get(tname)
-    except Exception:
-        return None
+    """Delegates to the shared calibration helper (run-record summaries
+    use it too — one source of truth for the fire-time threshold)."""
+    from nabla.rl.calibration import threshold_in_effect_for
+    return threshold_in_effect_for(anomaly)
 
 
 def _apply_disposition(incident: dict, disposition: str, now: str) -> None:

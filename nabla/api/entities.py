@@ -3,6 +3,7 @@
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 
 from nabla.auth import require_user
 from nabla.log import get_logger
@@ -10,6 +11,44 @@ from nabla.log import get_logger
 logger = get_logger("api.entities")
 
 router = APIRouter(prefix="/api/entities", tags=["entities"])
+
+
+class QuarantineState(BaseModel):
+    """The entity's baseline-hold state (N3/N5) as the UI shows it.
+    days_left is data-clock days; None when not currently held."""
+
+    held: bool
+    since: str | None = None
+    days_left: int | None = None
+    tp_hold: bool = False
+    batches_held: int = 0
+    held_batches: int = 0
+    held_events: int = 0
+    released_at: str | None = None
+
+
+class EntitySummary(BaseModel):
+    """One row of the entities table. is_machine is the SAME predicate
+    baselining and risk use (F5/N9) — the UI says EXCLUDED instead of
+    showing machine accounts with no baseline and no explanation."""
+
+    id: str
+    type: str
+    observation_count: int = 0
+    first_seen: str | None = None
+    last_seen: str | None = None
+    warm: bool = False
+    risk_score: float = 0
+    account_created_at: str | None = None
+    is_machine: bool = False
+    quarantine: QuarantineState | None = None
+
+
+class EntityListResponse(BaseModel):
+    entities: list[EntitySummary]
+    total: int
+    limit: int
+    offset: int
 
 
 def _load_profiles():
@@ -36,7 +75,7 @@ def _load_env_context() -> dict[str, Any]:
     return _load_environment_context(settings.effective_env_context_path)
 
 
-@router.get("")
+@router.get("", response_model=EntityListResponse)
 async def list_entities(
     type: str | None = None,
     search: str | None = None,
@@ -57,6 +96,9 @@ async def list_entities(
     Returns:
         Dict with entities list and total count.
     """
+    from nabla.utils import is_machine_account
+    from nabla.baselines import quarantine_summaries
+
     try:
         profiles = _load_profiles()
     except Exception:
@@ -94,6 +136,9 @@ async def list_entities(
                 "last_seen": profile.last_seen,
                 "warm": is_warm,
                 "risk_score": risk_map.get(eid, 0),
+                # F5/N9: the same predicate baselining and risk use —
+                # machine accounts are excluded, and the UI says so.
+                "is_machine": etype == "user" and is_machine_account(eid),
             }
             # User-specific extra field
             if etype == "user" and hasattr(profile, "account_created_at"):
@@ -102,6 +147,11 @@ async def list_entities(
 
     total = len(entities)
     page = entities[offset:offset + limit]
+
+    # Bulk quarantine read — one store load for the page, not per row
+    q_map = quarantine_summaries([e["id"] for e in page])
+    for e in page:
+        e["quarantine"] = q_map.get(e["id"])
 
     return {"entities": page, "total": total, "limit": limit, "offset": offset}
 
@@ -275,6 +325,12 @@ async def get_entity(
     result = profile.to_dict()
     result["type"] = entity_type
     result["warm"] = profile.observation_count >= 3
+    # Phase 2 (mockup 04): machine-account flag + quarantine state on
+    # the detail payload too — the detail panels consume these.
+    from nabla.utils import is_machine_account
+    from nabla.baselines import quarantine_summary
+    result["is_machine"] = entity_type == "user" and is_machine_account(entity_id)
+    result["quarantine"] = quarantine_summary(entity_id)
 
     # Attach risk score
     try:

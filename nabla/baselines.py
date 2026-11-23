@@ -1750,3 +1750,78 @@ def _is_quarantined(entity_id: str) -> bool:
     ttl = _TP_HOLD_DAYS if ent.get("tp_hold_days") else _QUARANTINE_TTL_DAYS
     age_days = (_data_clock_now() - since).total_seconds() / 86400.0
     return age_days < ttl
+
+
+def quarantine_summary(entity_id: str) -> dict | None:
+    """Public read for the entities API (Phase 2 UI): the entity's
+    quarantine state as the UI shows it — held or not, the data-clock
+    TTL window, and the held-event count from the pending store.
+
+    Single source of truth: the TTL window is computed by the same
+    logic _is_quarantined uses (TP holds 14 data-clock days, no-
+    disposition holds 7), never re-derived in the API layer."""
+    from nabla.utils import parse_iso_timestamp
+    q = _load_quarantine()
+    ent = q.get(entity_id)
+    if not ent:
+        return None
+    held = _is_quarantined(entity_id)
+    since = parse_iso_timestamp(ent.get("since", ""))
+    ttl = _TP_HOLD_DAYS if ent.get("tp_hold_days") else _QUARANTINE_TTL_DAYS
+    days_left = None
+    if held and since is not None:
+        age_days = (_data_clock_now() - since).total_seconds() / 86400.0
+        days_left = max(0, round(ttl - age_days))
+    pend = {}
+    held_events = 0
+    try:
+        pend = _load_pending()
+        held_events = sum(len(_batch_entries(b)) for b in pend.get(entity_id, []))
+    except Exception:
+        held_events = 0
+    return {
+        "held": held,
+        "since": ent.get("since"),
+        "days_left": days_left,
+        "tp_hold": bool(ent.get("tp_hold_days")),
+        "batches_held": ent.get("batches_held", 0),
+        "held_batches": len(pend.get(eid, [])),
+        "held_events": held_events,
+        "released_at": ent.get("released_at"),
+    }
+
+
+def quarantine_summaries(entity_ids: list[str]) -> dict[str, dict | None]:
+    """Bulk read for list endpoints — one quarantine + one pending load
+    for the whole page, not two file reads per entity row."""
+    from nabla.utils import parse_iso_timestamp
+    q = _load_quarantine()
+    try:
+        pend = _load_pending()
+    except Exception:
+        pend = {}
+
+    out: dict[str, dict | None] = {}
+    for eid in entity_ids:
+        ent = q.get(eid)
+        if not ent:
+            out[eid] = None
+            continue
+        held = _is_quarantined(eid)
+        since = parse_iso_timestamp(ent.get("since", ""))
+        ttl = _TP_HOLD_DAYS if ent.get("tp_hold_days") else _QUARANTINE_TTL_DAYS
+        days_left = None
+        if held and since is not None:
+            age_days = (_data_clock_now() - since).total_seconds() / 86400.0
+            days_left = max(0, round(ttl - age_days))
+        held_events = sum(len(_batch_entries(b)) for b in pend.get(eid, []))
+        out[eid] = {
+            "held": held,
+            "since": ent.get("since"),
+            "days_left": days_left,
+            "tp_hold": bool(ent.get("tp_hold_days")),
+            "batches_held": ent.get("batches_held", 0),
+            "held_events": held_events,
+            "released_at": ent.get("released_at"),
+        }
+    return out

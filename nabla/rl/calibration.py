@@ -199,6 +199,19 @@ def effective_thresholds() -> dict[str, float]:
     return {name: float(v["current"]) for name, v in store.items()}
 
 
+def threshold_in_effect_for(anomaly: dict) -> float | None:
+    """The calibrated value of the anomaly's method's threshold at fire
+    time. Shared by the incident record (disposition-time snapshot) and
+    the run record (N10/A4: raw_score vs threshold in the run detail)."""
+    try:
+        tname = METHOD_TO_THRESHOLD.get(anomaly.get("detection_method", ""))
+        if not tname:
+            return None
+        return effective_thresholds().get(tname)
+    except Exception:
+        return None
+
+
 # ── The calibrate engine (review A3 recommendation, our implementation) ────
 
 def calibrate(

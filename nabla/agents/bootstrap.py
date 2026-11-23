@@ -91,7 +91,7 @@ def bootstrap(client: Letta | None = None) -> dict[str, str]:
     # Works around bug #3270: compaction tokenizer mismatch
     compaction_model = settings.letta_compaction_model or settings.llm_model
     logger.info("Setting compaction model workaround (%s)...", compaction_model)
-    set_agent_compaction_model(supervisor_id, compaction_model, letta_base_url=settings.letta_base_url)
+    set_agent_compaction_model(supervisor_id, compaction_model)
 
     # 4. Fix embedding model prefix — Letta SDK adds 'ollama/' but Ollama expects bare name
     # Works around: Ollama /v1/embeddings returns 404 for 'ollama/embeddinggemma:latest'
@@ -105,7 +105,6 @@ def bootstrap(client: Letta | None = None) -> dict[str, str]:
         fix_embedding_model_prefix(
             supervisor_id, embedding_model,
             embedding_endpoint=settings.embedding_endpoint,
-            letta_base_url=settings.letta_base_url,
         )
 
     logger.info("Bootstrap complete — supervisor: %s", supervisor_id[:8])

@@ -308,8 +308,9 @@ cd nabla
 
 # Configure environment
 cp .env.example .env
-# Edit .env — set POSTGRES_PASSWORD (generate one with):
+# Edit .env — set POSTGRES_PASSWORD and NABLA_LETTA_API_KEY (generate with):
 python3 -c "import secrets; print(secrets.token_urlsafe(24))"
+openssl rand -base64 32   # NABLA_LETTA_API_KEY (LettaLocal server password)
 
 # Start services
 docker compose up -d
@@ -428,6 +429,7 @@ All settings use the `NABLA_` env prefix. Key variables:
 | `NABLA_WEB_HOST` | `0.0.0.0` | Web server bind host |
 | `NABLA_WEB_PORT` | `8000` | Web server bind port |
 | `POSTGRES_PASSWORD` | _(required)_ | PostgreSQL password |
+| `NABLA_LETTA_API_KEY` | _(required)_ | LettaLocal API key — must equal the Letta server password (`openssl rand -base64 32`) |
 
 ### vLLM upgrade path
 
@@ -486,7 +488,7 @@ Token-based via `NABLA_SETUP_TOKEN`. If set, all API endpoints require `Authoriz
 
 | Service | Image | Port | Purpose |
 |---|---|---|---|
-| `letta` | `ghcr.io/qfunction-ai/letta-local:0.16.31` | `127.0.0.1:8284` | Agent runtime (QFunction fork — Ollama reasoning-model detection, local-model hardening; canary disabled locally via `LETTA_CANARY_ENABLED=false`) |
+| `letta` | `ghcr.io/qfunction-ai/letta-local:0.16.38` | `127.0.0.1:8284` | Agent runtime (QFunction fork — Ollama reasoning-model detection, local-model hardening; canary disabled locally via `LETTA_CANARY_ENABLED=false`) |
 | `postgres` | `pgvector/pgvector:pg16` | `127.0.0.1:5433` | Agent memory + metadata |
 | `nabla` | Built from `Dockerfile` | `127.0.0.1:8002` | CLI + scheduler + API server |
 | `frontend` | Built from `frontend/Dockerfile` | `127.0.0.1:3000` | Web UI (nginx reverse proxy) |

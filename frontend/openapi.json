@@ -1,0 +1,2510 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Nabla API",
+    "description": "UEBA multi-agent system \u2014 API for the web UI",
+    "version": "0.2.0"
+  },
+  "paths": {
+    "/api/auth/setup-status": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Setup Status",
+        "description": "Report first-run state.\n\nAnti-reconnaissance shape: requires_setup_token is ONLY revealed\nwhen zero users exist (the registration form needs it). Once a user\nexists, the flag disappears \u2014 attackers cannot learn the\nregistration shape from a configured deployment.",
+        "operationId": "setup_status_api_auth_setup_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Register",
+        "description": "Register the first user (becomes admin). Rejected once users exist.\n\nIf NABLA_SETUP_TOKEN is configured, the request must carry it.",
+        "operationId": "register_api_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Login",
+        "description": "Log in: verify credentials, set the session cookie.\n\nGeneric failure shape by design: the same 401 \"Invalid username or\npassword\" whether the user is missing or the password is wrong \u2014\nno user enumeration.",
+        "operationId": "login_api_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "type": "object",
+                "title": "Body"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Logout",
+        "description": "Clear the session cookie.",
+        "operationId": "logout_api_auth_logout_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Me",
+        "description": "Hydrate auth state from the session cookie.",
+        "operationId": "me_api_auth_me_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/run": {
+      "post": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Trigger Run",
+        "description": "Trigger a pipeline run in the background.\n\nReturns immediately with a run_id. Check status via GET /api/pipeline/status.",
+        "operationId": "trigger_run_api_pipeline_run_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PipelineRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineRunResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/status": {
+      "get": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Get Status",
+        "description": "Get current pipeline status \u2014 running or idle.",
+        "operationId": "get_status_api_pipeline_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/history": {
+      "get": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Get History",
+        "description": "Get pipeline run history with pagination.\n\nArgs:\n    limit: Max runs to return.\n    offset: Number of runs to skip.\n\nReturns:\n    Dict with runs list and total count.",
+        "operationId": "get_history_api_pipeline_history_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunHistoryResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Get Run Detail",
+        "description": "Get one run record with full detail (UI-4).\n\nReturns the persisted anomalies, findings summary, supervisor\nnarrative, and step durations for the run detail view. Supports\npartial run_id match (first 8 chars), consistent with incidents.",
+        "operationId": "get_run_detail_api_pipeline_runs__run_id__get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Run Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunRecordResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/pipeline/stream": {
+      "post": {
+        "tags": [
+          "pipeline"
+        ],
+        "summary": "Stream Pipeline",
+        "description": "SSE stream for pipeline progress events.\n\nEmits step progress events while a pipeline is running.\nIf no pipeline is running, emits a single idle event.",
+        "operationId": "stream_pipeline_api_pipeline_stream_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dashboard": {
+      "get": {
+        "tags": [
+          "dashboard"
+        ],
+        "summary": "Get Dashboard",
+        "description": "Get dashboard overview data.\n\nReturns:\n    Dict with system phase, health checks, entity counts,\n    incident counts, and recent runs/incidents.",
+        "operationId": "get_dashboard_api_dashboard_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/entities": {
+      "get": {
+        "tags": [
+          "entities"
+        ],
+        "summary": "List Entities",
+        "description": "List all known entities with summary profiles.\n\nArgs:\n    type: Filter by entity type \u2014 user, host, or ip.\n    search: Search entity IDs (case-insensitive substring).\n    warm: Filter by warm-up status (true=warm, false=cold).\n    limit: Max entities to return.\n    offset: Number of entities to skip.\n\nReturns:\n    Dict with entities list and total count.",
+        "operationId": "list_entities_api_entities_get",
+        "parameters": [
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Type"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Search"
+            }
+          },
+          {
+            "name": "warm",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Warm"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EntityListResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/entities/{entity_id}/attribution": {
+      "get": {
+        "tags": [
+          "entities"
+        ],
+        "summary": "Get Entity Attribution",
+        "description": "Assemble the 'why this risk score' view for one entity.\n\nCombines: recent anomalies for this entity (from persisted run\nrecords \u2014 newest `runs` runs), incidents for this entity, and the\nrisk-category breakdown from the risk store. One call, one story.",
+        "operationId": "get_entity_attribution_api_entities__entity_id__attribution_get",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          },
+          {
+            "name": "runs",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "title": "Runs"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/entities/{entity_id}/context": {
+      "put": {
+        "tags": [
+          "entities"
+        ],
+        "summary": "Update Entity Context",
+        "description": "Add, update, or remove facts for a single entity's context.\n\nBody: {\"facts\": [\"...\", \"...\"]} \u2014 replaces the entity's fact list.\nAn empty list removes the entity from the context document.",
+        "operationId": "update_entity_context_api_entities__entity_id__context_put",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": true,
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/entities/{entity_id}": {
+      "get": {
+        "tags": [
+          "entities"
+        ],
+        "summary": "Get Entity",
+        "description": "Get full entity profile detail.\n\nArgs:\n    entity_id: Entity identifier (username, hostname, or IP).\n\nReturns:\n    Full entity profile with EWMA values, typical behavior,\n    and environment context facts.",
+        "operationId": "get_entity_api_entities__entity_id__get",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/incidents": {
+      "get": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "List Incidents",
+        "description": "List incidents with optional filters.\n\nArgs:\n    status: Filter by status \u2014 new, investigating, resolved, false_positive.\n    severity: Filter by severity \u2014 low, medium, high, critical.\n    entity: Filter by entity name (exact match) \u2014 supports process-typed\n        incident groupings (UI-3).\n    run_id: Filter by originating pipeline run (UI-3/UI-4).\n    limit: Max incidents to return.\n    offset: Number of incidents to skip.\n\nReturns:\n    Dict with incidents list and total count.",
+        "operationId": "list_incidents_api_incidents_get",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "new",
+                    "investigating",
+                    "resolved",
+                    "false_positive"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "disposition",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "true_positive",
+                    "benign_true_positive",
+                    "false_positive"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Disposition"
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "name": "entity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Entity"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/incidents/stats": {
+      "get": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "Get Incident Stats",
+        "description": "Get incident counts by status and severity.\n\nReturns:\n    Dict with by_status and by_severity counts.",
+        "operationId": "get_incident_stats_api_incidents_stats_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/incidents/{incident_id}": {
+      "get": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "Get Incident",
+        "description": "Get a single incident by ID.\n\nArgs:\n    incident_id: Incident UUID (supports partial match, first 8 chars).\n\nReturns:\n    Incident dict with evidence, counterfactuals, and timeline.",
+        "operationId": "get_incident_api_incidents__incident_id__get",
+        "parameters": [
+          {
+            "name": "incident_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Incident Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "incidents"
+        ],
+        "summary": "Update Incident",
+        "description": "Update an incident's status and/or append notes.\n\nArgs:\n    incident_id: Incident UUID.\n    request: Update request with optional status and notes.\n\nReturns:\n    Updated incident dict.",
+        "operationId": "update_incident_api_incidents__incident_id__put",
+        "parameters": [
+          {
+            "name": "incident_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Incident Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IncidentUpdateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat/stream": {
+      "post": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat Stream",
+        "operationId": "chat_stream_api_chat_stream_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/watchlists": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Watchlists",
+        "description": "Read current watchlist configuration.\n\nReturns:\n    Dict of group_name \u2192 entity list.",
+        "operationId": "get_watchlists_api_config_watchlists_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Update Watchlists",
+        "description": "Replace watchlist configuration.\n\nValidates all entity values before saving.",
+        "operationId": "update_watchlists_api_config_watchlists_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WatchlistUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/environment": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Environment",
+        "description": "Read full environment context.\n\nReturns the three-section structure:\n- environment: immutable user-declared facts\n- entities: immutable per-entity facts\n- network_ranges, new_accounts, service_accounts, admin_accounts,\n  benign_patterns: mutable state (auto-detected + user-declared)",
+        "operationId": "get_environment_api_config_environment_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Update Environment",
+        "description": "Update environment context.\n\nOnly writes to the file \u2014 mutable state (auto-detected ranges,\nnew accounts with timestamps) is re-derived on the next pipeline run.",
+        "operationId": "update_environment_api_config_environment_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnvironmentUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/schedule": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Schedule",
+        "description": "Get current scheduler configuration and status.\n\nReturns:\n    Dict with running status, interval, log types, log count,\n    next run time.",
+        "operationId": "get_schedule_api_config_schedule_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Update Schedule",
+        "description": "Update scheduler configuration.\n\nStarts or stops the scheduler and changes parameters.",
+        "operationId": "update_schedule_api_config_schedule_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config/connectors": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "Get Connectors",
+        "description": "Get connector status \u2014 which SIEM connectors are configured.\n\nReturns:\n    Dict with splunk and sumologic status.",
+        "operationId": "get_connectors_api_config_connectors_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/bootstrap": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Bootstrap",
+        "description": "Bootstrap the Nabla agent system.\n\nCreates supervisor agent, shared blocks, and tools.\nIdempotent \u2014 safe to call if already bootstrapped.",
+        "operationId": "bootstrap_api_system_bootstrap_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/teardown": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Teardown",
+        "description": "Teardown the Nabla agent system.\n\nRemoves all Nabla agents and shared blocks.",
+        "operationId": "teardown_api_system_teardown_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Health Check",
+        "description": "Check system health \u2014 Letta, Ollama, data directory.\n\nReturns:\n    Dict with health status for each component.",
+        "operationId": "health_check_api_system_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/rl": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Rl State",
+        "description": "Get threshold calibration state and detection method effectiveness.\n\nPhase 3: thresholds come from the calibration store (label-driven);\nthe bandit survives unchanged.\n\nReturns:\n    Dict with current thresholds (current/default/pinned/evidence),\n    label counts, and bandit effectiveness.",
+        "operationId": "get_rl_state_api_system_rl_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/export": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Export State",
+        "description": "Export all Nabla learned state as a JSON download.\n\nReturns:\n    JSON file with all state files bundled.",
+        "operationId": "export_state_api_system_export_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/system/import": {
+      "post": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Import State",
+        "description": "Import Nabla state from a JSON file.\n\nArgs:\n    file: Uploaded JSON file.\n    merge: If true, merge with existing state. If false, overwrite.\n\nReturns:\n    Dict with import status.",
+        "operationId": "import_state_api_system_import_post",
+        "parameters": [
+          {
+            "name": "merge",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "default": false,
+              "title": "Merge"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_import_state_api_system_import_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/upload": {
+      "post": {
+        "tags": [
+          "upload"
+        ],
+        "summary": "Upload File",
+        "description": "Upload a log file for ad-hoc analysis.\n\nThe file is saved to /data/uploads/ and can be referenced\nin a pipeline run with source=file.\n\nArgs:\n    file: Uploaded log file.\n    log_type: Log type hint \u2014 auth, network, dns, endpoint.\n    format: File format hint \u2014 csv, json, jsonl, xml, text.\n\nReturns:\n    Dict with file_id and path for pipeline use.",
+        "operationId": "upload_file_api_upload_post",
+        "parameters": [
+          {
+            "name": "log_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "default": "auth",
+              "title": "Log Type"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Format"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_file_api_upload_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/timeline/{entity_id}": {
+      "get": {
+        "tags": [
+          "timeline"
+        ],
+        "summary": "Get Entity Timeline",
+        "description": "Get the chronological event timeline for an entity.\n\nCombines anomalies, incidents, and risk score changes into a single\ntimeline view, sorted chronologically.",
+        "operationId": "get_entity_timeline_api_timeline__entity_id__get",
+        "parameters": [
+          {
+            "name": "entity_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Entity Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 0,
+              "title": "Offset"
+            }
+          },
+          {
+            "name": "event_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "anomaly",
+                "incident",
+                "risk_change",
+                "all"
+              ],
+              "type": "string",
+              "default": "all",
+              "title": "Event Type"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimelineResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "summary": "Health",
+        "description": "Health check endpoint.",
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_import_state_api_system_import_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_import_state_api_system_import_post"
+      },
+      "Body_upload_file_api_upload_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "format": "binary",
+            "title": "File"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_file_api_upload_post"
+      },
+      "ChatRequest": {
+        "properties": {
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "include_reasoning": {
+            "type": "boolean",
+            "title": "Include Reasoning",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "message"
+        ],
+        "title": "ChatRequest",
+        "description": "Request body for a chat message.\n\nAttributes:\n    message: The user's message to the supervisor.\n    include_reasoning: Whether to include reasoning in the response."
+      },
+      "EntityListResponse": {
+        "properties": {
+          "entities": {
+            "items": {
+              "$ref": "#/components/schemas/EntitySummary"
+            },
+            "type": "array",
+            "title": "Entities"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "entities",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "EntityListResponse"
+      },
+      "EntitySummary": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "observation_count": {
+            "type": "integer",
+            "title": "Observation Count",
+            "default": 0
+          },
+          "first_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Seen"
+          },
+          "last_seen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Seen"
+          },
+          "warm": {
+            "type": "boolean",
+            "title": "Warm",
+            "default": false
+          },
+          "risk_score": {
+            "type": "number",
+            "title": "Risk Score",
+            "default": 0
+          },
+          "account_created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Account Created At"
+          },
+          "is_machine": {
+            "type": "boolean",
+            "title": "Is Machine",
+            "default": false
+          },
+          "quarantine": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/QuarantineState"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "type"
+        ],
+        "title": "EntitySummary",
+        "description": "One row of the entities table. is_machine is the SAME predicate\nbaselining and risk use (F5/N9) \u2014 the UI says EXCLUDED instead of\nshowing machine accounts with no baseline and no explanation."
+      },
+      "EnvironmentUpdate": {
+        "properties": {
+          "environment": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Environment"
+          },
+          "entities": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Entities"
+          },
+          "network_ranges": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Network Ranges"
+          },
+          "new_accounts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "New Accounts"
+          },
+          "service_accounts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Service Accounts"
+          },
+          "admin_accounts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Admin Accounts"
+          },
+          "benign_patterns": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Benign Patterns"
+          }
+        },
+        "type": "object",
+        "title": "EnvironmentUpdate",
+        "description": "Environment context update.\n\nAttributes:\n    environment: List of free-form environment facts.\n    entities: Dict of entity_name \u2192 list of facts.\n    network_ranges: List of CIDR network ranges.\n    new_accounts: List of new account names.\n    service_accounts: List of service account names.\n    admin_accounts: List of admin account names.\n    benign_patterns: List of benign pattern descriptions."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "IncidentUpdateRequest": {
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "new",
+                  "investigating",
+                  "resolved",
+                  "false_positive"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "disposition": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "true_positive",
+                  "benign_true_positive",
+                  "false_positive"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disposition"
+          },
+          "notes": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Notes"
+          }
+        },
+        "type": "object",
+        "title": "IncidentUpdateRequest",
+        "description": "Request body for updating an incident.\n\nAttributes:\n    status: New status \u2014 new, investigating, resolved, false_positive.\n    notes: Operator notes to append."
+      },
+      "PipelineRunRequest": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "auto"
+          },
+          "log_type": {
+            "type": "string",
+            "title": "Log Type",
+            "default": "all"
+          },
+          "log_count": {
+            "type": "integer",
+            "title": "Log Count",
+            "default": 20
+          },
+          "file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File"
+          },
+          "format": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Format"
+          },
+          "map": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Map"
+          },
+          "watchlist_groups": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Watchlist Groups"
+          },
+          "update_baseline": {
+            "type": "boolean",
+            "title": "Update Baseline",
+            "default": false
+          }
+        },
+        "type": "object",
+        "title": "PipelineRunRequest",
+        "description": "Request body for triggering a pipeline run.\n\nAttributes:\n    source: Ingestion source \u2014 auto, synthetic, splunk, sumologic, file.\n    log_type: Log type(s) \u2014 auth, network, dns, endpoint, or all.\n    log_count: Number of log entries per type (synthetic only).\n    file: Path to uploaded log file (when source=file).\n    format: File format hint \u2014 csv, json, jsonl, xml, text.\n    map: Column mapping \u2014 canonical=raw_col,canonical2=raw_col2.\n    watchlist_groups: Watchlist groups to target.\n    update_baseline: Whether file-sourced runs should update baselines.\n        Defaults to false \u2014 file uploads are ad-hoc analysis and shouldn't\n        shift the baseline. Set to true for onboarding a new log source."
+      },
+      "PipelineRunResponse": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id"
+        ],
+        "title": "PipelineRunResponse"
+      },
+      "PipelineStatus": {
+        "properties": {
+          "running": {
+            "type": "boolean",
+            "title": "Running"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "current_step": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Step"
+          },
+          "last_run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunRecordResponse"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "running"
+        ],
+        "title": "PipelineStatus"
+      },
+      "QuarantineState": {
+        "properties": {
+          "held": {
+            "type": "boolean",
+            "title": "Held"
+          },
+          "since": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Since"
+          },
+          "days_left": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Days Left"
+          },
+          "tp_hold": {
+            "type": "boolean",
+            "title": "Tp Hold",
+            "default": false
+          },
+          "batches_held": {
+            "type": "integer",
+            "title": "Batches Held",
+            "default": 0
+          },
+          "held_batches": {
+            "type": "integer",
+            "title": "Held Batches",
+            "default": 0
+          },
+          "held_events": {
+            "type": "integer",
+            "title": "Held Events",
+            "default": 0
+          },
+          "released_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Released At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "held"
+        ],
+        "title": "QuarantineState",
+        "description": "The entity's baseline-hold state (N3/N5) as the UI shows it.\ndays_left is data-clock days; None when not currently held."
+      },
+      "RunAnomalySummary": {
+        "properties": {
+          "anomaly_id": {
+            "type": "string",
+            "title": "Anomaly Id",
+            "default": ""
+          },
+          "entity": {
+            "type": "string",
+            "title": "Entity",
+            "default": ""
+          },
+          "entity_type": {
+            "type": "string",
+            "title": "Entity Type",
+            "default": "user"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "default": "medium"
+          },
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp",
+            "default": ""
+          },
+          "detection_method": {
+            "type": "string",
+            "title": "Detection Method",
+            "default": "unknown"
+          },
+          "details": {
+            "type": "string",
+            "title": "Details",
+            "default": ""
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories",
+            "default": []
+          },
+          "mitre_attack": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Mitre Attack",
+            "default": []
+          },
+          "raw_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Score"
+          },
+          "event_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Event Ids",
+            "default": []
+          },
+          "threshold_in_effect": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold In Effect"
+          }
+        },
+        "type": "object",
+        "title": "RunAnomalySummary",
+        "description": "The compact anomaly shape persisted in run records (R-4: the API\ncontract is now declared, generated into frontend types, and drift\nbecomes a build error)."
+      },
+      "RunFindingSummary": {
+        "properties": {
+          "entity": {
+            "type": "string",
+            "title": "Entity",
+            "default": "unknown"
+          },
+          "entity_type": {
+            "type": "string",
+            "title": "Entity Type",
+            "default": "unknown"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type",
+            "default": "unknown"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "default": "medium"
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 0.5
+          },
+          "mitre_attack": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Mitre Attack",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "RunFindingSummary"
+      },
+      "RunHistoryResponse": {
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/RunRecordResponse"
+            },
+            "type": "array",
+            "title": "Runs"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit"
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset"
+          }
+        },
+        "type": "object",
+        "required": [
+          "runs",
+          "total",
+          "limit",
+          "offset"
+        ],
+        "title": "RunHistoryResponse"
+      },
+      "RunLayerCounts": {
+        "properties": {
+          "base": {
+            "type": "integer",
+            "title": "Base",
+            "default": 0
+          },
+          "gcn_lof": {
+            "type": "integer",
+            "title": "Gcn Lof",
+            "default": 0
+          },
+          "provenance": {
+            "type": "integer",
+            "title": "Provenance",
+            "default": 0
+          },
+          "temporal": {
+            "type": "integer",
+            "title": "Temporal",
+            "default": 0
+          },
+          "exfiltration": {
+            "type": "integer",
+            "title": "Exfiltration",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "RunLayerCounts"
+      },
+      "RunRecordResponse": {
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "started_at": {
+            "type": "string",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "default": "auto"
+          },
+          "operator": {
+            "type": "string",
+            "title": "Operator",
+            "default": ""
+          },
+          "watchlist_groups": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Watchlist Groups"
+          },
+          "log_types": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "title": "Log Types",
+            "default": "all"
+          },
+          "log_count": {
+            "type": "integer",
+            "title": "Log Count",
+            "default": 20
+          },
+          "anomaly_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anomaly Count"
+          },
+          "findings_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Findings Count"
+          },
+          "step_durations": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Durations"
+          },
+          "success": {
+            "type": "boolean",
+            "title": "Success",
+            "default": false
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "anomalies": {
+            "items": {
+              "$ref": "#/components/schemas/RunAnomalySummary"
+            },
+            "type": "array",
+            "title": "Anomalies",
+            "default": []
+          },
+          "findings": {
+            "items": {
+              "$ref": "#/components/schemas/RunFindingSummary"
+            },
+            "type": "array",
+            "title": "Findings",
+            "default": []
+          },
+          "degradations": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Degradations",
+            "default": []
+          },
+          "layer_counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunLayerCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "temporal_stats": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Temporal Stats",
+            "default": {}
+          },
+          "supervisor_narrative": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Supervisor Narrative"
+          },
+          "ingest_chunks": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingest Chunks"
+          },
+          "ingest_siem_data": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingest Siem Data"
+          },
+          "ingest_frozen_baseline": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ingest Frozen Baseline"
+          }
+        },
+        "type": "object",
+        "required": [
+          "run_id",
+          "started_at"
+        ],
+        "title": "RunRecordResponse",
+        "description": "One run record. Every field the record can carry is declared \u2014\nresponse models drop undeclared fields, so this IS the contract.\nOld records (persisted before a field existed) validate via the\ndefaults."
+      },
+      "ScheduleUpdate": {
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "title": "Enabled",
+            "default": true
+          },
+          "interval": {
+            "type": "integer",
+            "title": "Interval",
+            "default": 5
+          },
+          "log_types": {
+            "type": "string",
+            "title": "Log Types",
+            "default": "all"
+          },
+          "log_count": {
+            "type": "integer",
+            "title": "Log Count",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "title": "ScheduleUpdate",
+        "description": "Schedule configuration update.\n\nAttributes:\n    enabled: Start or stop the scheduler.\n    interval: Interval in minutes between pipeline runs.\n    log_types: Comma-separated log types.\n    log_count: Number of log entries per type."
+      },
+      "TimelineEvent": {
+        "properties": {
+          "timestamp": {
+            "type": "string",
+            "title": "Timestamp",
+            "description": "ISO timestamp"
+          },
+          "event_type": {
+            "type": "string",
+            "title": "Event Type",
+            "description": "anomaly, incident, or risk_change"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "description": "low, medium, high, critical",
+            "default": "medium"
+          },
+          "entity": {
+            "type": "string",
+            "title": "Entity",
+            "description": "Entity ID",
+            "default": ""
+          },
+          "entity_type": {
+            "type": "string",
+            "title": "Entity Type",
+            "description": "user, host, ip",
+            "default": "user"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title",
+            "description": "Short event description",
+            "default": ""
+          },
+          "details": {
+            "type": "string",
+            "title": "Details",
+            "description": "Detailed event description",
+            "default": ""
+          },
+          "detection_method": {
+            "type": "string",
+            "title": "Detection Method",
+            "description": "Detection method for anomalies",
+            "default": ""
+          },
+          "categories": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Categories",
+            "description": "Threat categories"
+          },
+          "risk_score": {
+            "type": "number",
+            "title": "Risk Score",
+            "description": "Entity risk score at time of event",
+            "default": 0
+          },
+          "source": {
+            "type": "string",
+            "title": "Source",
+            "description": "Source: anomaly, incident, risk",
+            "default": ""
+          },
+          "mitre_attack": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Mitre Attack",
+            "description": "MITRE ATT&CK mappings"
+          }
+        },
+        "type": "object",
+        "required": [
+          "timestamp",
+          "event_type"
+        ],
+        "title": "TimelineEvent",
+        "description": "A single event on the timeline."
+      },
+      "TimelineResponse": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/TimelineEvent"
+            },
+            "type": "array",
+            "title": "Events"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "entity": {
+            "type": "string",
+            "title": "Entity"
+          },
+          "entity_type": {
+            "type": "string",
+            "title": "Entity Type"
+          },
+          "earliest": {
+            "type": "string",
+            "title": "Earliest",
+            "default": ""
+          },
+          "latest": {
+            "type": "string",
+            "title": "Latest",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "required": [
+          "events",
+          "total",
+          "entity",
+          "entity_type"
+        ],
+        "title": "TimelineResponse",
+        "description": "Paginated timeline response."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "WatchlistUpdate": {
+        "properties": {
+          "groups": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": "object",
+            "title": "Groups"
+          }
+        },
+        "type": "object",
+        "required": [
+          "groups"
+        ],
+        "title": "WatchlistUpdate",
+        "description": "Full watchlist replacement.\n\nAttributes:\n    groups: Dict of group_name \u2192 entity list."
+      }
+    }
+  }
+}

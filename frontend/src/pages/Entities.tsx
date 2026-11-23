@@ -2,21 +2,19 @@ import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import Timeline from '../components/Timeline';
+import type { components } from '../types/api';
 
-interface Entity {
-  id: string;
-  type: string;
-  observation_count: number;
-  first_seen: string | null;
-  last_seen: string | null;
-  warm: boolean;
-  account_created_at?: string | null;
-  risk_score: number;
-}
+// R-4: generated from the entities response model
+type Entity = components['schemas']['EntitySummary'];
+type QuarantineState = components['schemas']['QuarantineState'];
 
 interface EntityDetail {
   type: string;
   warm: boolean;
+  // Phase 2 (mockup 04) — hand-typed until the detail endpoint gets its
+  // response model in Phase 3; the list rows already use generated types.
+  is_machine?: boolean;
+  quarantine?: QuarantineState | null;
   observation_count?: number;
   first_seen?: string | null;
   last_seen?: string | null;
@@ -189,7 +187,8 @@ export default function Entities() {
                     <th>Type</th>
                     <th>Risk</th>
                     <th>Obs</th>
-                    <th>Status</th>
+                    <th>Baseline</th>
+                    <th>State</th>
                     <th>Last Seen</th>
                   </tr>
                 </thead>
@@ -203,18 +202,34 @@ export default function Entities() {
                       <td style={{ color: selected === e.id ? 'var(--accent)' : 'inherit' }}>
                         {e.id}
                       </td>
-                      <td><span className="tag">{e.type}</span></td>
                       <td>
-                        <span className={`badge ${e.risk_score >= 50 ? 'badge-critical' : e.risk_score >= 20 ? 'badge-high' : e.risk_score > 0 ? 'badge-medium' : 'badge-resolved'}`}>
-                          {e.risk_score.toFixed(0)}
-                        </span>
+                        <span className="tag">{e.type}</span>
+                        {e.is_machine && (
+                          <span className="tag" style={{ marginLeft: 4, fontSize: 10, borderColor: 'var(--accent)', color: 'var(--accent)' }} title="Machine account — excluded from behavioral baselining and risk (F5/N9)">
+                            MACHINE
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {e.is_machine ? (
+                          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                        ) : (
+                          <span className={`badge ${e.risk_score >= 50 ? 'badge-critical' : e.risk_score >= 20 ? 'badge-high' : e.risk_score > 0 ? 'badge-medium' : 'badge-resolved'}`}>
+                            {e.risk_score.toFixed(0)}
+                          </span>
+                        )}
                       </td>
                       <td>{e.observation_count}</td>
                       <td>
-                        <span className={`badge ${e.warm ? 'badge-resolved' : 'badge-new'}`}>
-                          {e.warm ? 'warm' : 'cold'}
-                        </span>
+                        {e.is_machine ? (
+                          <span style={{ color: 'var(--text-tertiary)' }}>—</span>
+                        ) : (
+                          <span className={`badge ${e.warm ? 'badge-resolved' : 'badge-new'}`}>
+                            {e.warm ? 'warm' : 'cold'}
+                          </span>
+                        )}
                       </td>
+                      <td>{entityState(e)}</td>
                       <td>{e.last_seen ? new Date(e.last_seen).toLocaleDateString() : '—'}</td>
                     </tr>
                   ))}
@@ -364,6 +379,45 @@ export default function Entities() {
                     <div className="section-title" data-symbol="∇">PEER GROUP</div>
                     <div style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: 'var(--text-tertiary)' }}>
                       No peer group yet — forms at the next re-cluster (about hourly)
+                    </div>
+                  </div>
+                )}
+
+                {/* Quarantine panel (Phase 2 / mockup 04, N3/N5) */}
+                {detail.quarantine?.held && (
+                  <div className="card" style={{ marginBottom: 16, borderColor: 'var(--warning-border, #b8860b)' }}>
+                    <div className="section-title" data-symbol="⚠">BASELINE DATA HELD</div>
+                    <div style={{ fontFamily: 'var(--font-display)', fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                      {detail.quarantine.tp_hold
+                        ? 'A TRUE POSITIVE disposition holds this entity\'s attack-window events out of its baselines so the profile does not learn from the attack (N5).'
+                        : 'Anomalies fired for this entity — its recent events are held out of the baselines until the incidents are dispositioned (or the hold expires).'}
+                      {' '}The hold expires automatically on the data clock
+                      {detail.quarantine.days_left != null ? ` — ${detail.quarantine.days_left} data-clock day${detail.quarantine.days_left === 1 ? '' : 's'} left` : ''}.
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--text-tertiary)', borderLeft: '2px solid var(--border)', paddingLeft: 10 }}>
+                      Held: {detail.quarantine.held_events} events across {detail.quarantine.held_batches} batch{detail.quarantine.held_batches === 1 ? '' : 'es'} ·
+                      cap 7 data-clock days + 5,000 events/entity (N3). If this was a mistake, re-disposition the incident FALSE POSITIVE and the held data returns on the next pipeline run.
+                    </div>
+                  </div>
+                )}
+
+                {/* Machine-account panel (Phase 2 / mockup 04, F5/N9) */}
+                {detail.is_machine && (
+                  <div className="card" style={{ marginBottom: 16 }}>
+                    <div className="section-title" data-symbol="⚙">MACHINE ACCOUNT</div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                      Behavioral risk excluded; signature &amp; exfiltration risk scores at full weight.
+                      Service and system principals (svc-*, root, adm, hostnames ending in $) have no habits to
+                      deviate from, so behavioral detections (z-scores, off-hours, spikes, EWMA drift) don\'t score
+                      for them — their job volume would bury human incidents. Signature detections (LOLBIN, attack
+                      scripts, renamed tools, registry persistence) and exfiltration score normally: an attack run
+                      as root is still an attack. Exclusion is configurable via NABLA_MACHINE_ACCOUNTS /
+                      NABLA_HUMAN_ACCOUNTS (Settings, compose-forwarded).
+                    </div>
+                    <div style={{ fontSize: 11, color: 'var(--warning, #b8860b)' }}>
+                      ⚠ Documented blind spot: interactive use of a service account (console logins, off-hours GUI
+                      sessions) is invisible to per-account behavioral baselining. Compensate with rule-based
+                      coverage (LOLBIN, sanctioned-services, network anomalies) — see the Methods reference.
                     </div>
                   </div>
                 )}
@@ -531,4 +585,33 @@ function EntityContextEditor({ entityId }: { entityId: string }) {
       </div>
     </div>
   );
+}
+
+/**
+ * Phase 2 (mockup 04): the entity's baseline state as one honest tag.
+ * Machine accounts are EXCLUDED (F5/N9 — the UI says so instead of
+ * showing them with no baseline and no explanation); quarantined
+ * entities show the hold and its data-clock TTL (N3/N5).
+ */
+function entityState(e: Entity) {
+  if (e.is_machine) {
+    return (
+      <span className="tag" title="Service and system principals have no habits to deviate from — behavioral detections don't score for them. Signature and exfiltration detections still score at full weight.">
+        EXCLUDED FROM BASELINE & RISK
+      </span>
+    );
+  }
+  if (e.quarantine?.held) {
+    const left = e.quarantine.days_left;
+    return (
+      <span
+        className="tag"
+        style={{ borderColor: 'var(--warning-border, #b8860b)', color: 'var(--warning, #b8860b)' }}
+        title={`Baseline data held since ${e.quarantine.since ?? '?'} — ${e.quarantine.held_events} events held out of the profile until disposition (or TTL).`}
+      >
+        QUARANTINE HOLD{left != null ? ` — ${left}d LEFT` : ''}
+      </span>
+    );
+  }
+  return <span className="tag" style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)' }}>ACTIVE</span>;
 }

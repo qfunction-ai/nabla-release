@@ -39,6 +39,12 @@ jobs:
           NABLA_IDENTITY_CHECK_SALT: ${{ secrets.NABLA_IDENTITY_CHECK_SALT }}
         run: python scripts/check_identities.py
 
+      - name: Install frontend type generator (R-4)
+        run: cd frontend && npm ci
+
+      - name: API types freshness (R-4 — generated from the response models)
+        run: python scripts/generate_api_types.py --check
+
       - name: Run unit tests
         run: python -m pytest tests/ -v -k "not integration" --tb=short --cov=nabla --cov-report=term-missing --cov-report=xml
 
@@ -99,6 +105,7 @@ jobs:
         run: |
           cat > .env <<'EOF'
           POSTGRES_PASSWORD=ci-test-password
+          NABLA_LETTA_API_KEY=ci-test-letta-key
           EOF
 
       - name: Start services

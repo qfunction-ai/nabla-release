@@ -1,49 +1,16 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
+import { runDuration } from '../lib/runs';
+import type { components } from '../types/api';
 
-interface RunRecord {
-  run_id: string;
-  started_at: string;
-  finished_at: string | null;
-  log_types: string | string[];
-  anomaly_count: number;
-  findings_count: number;
-  success: boolean;
-  error: string | null;
-  step_durations: Record<string, number> | null;
-  duration_ms: number | null;
-}
-
-interface PipelineStatus {
-  running: boolean;
-  run_id: string | null;
-  started_at: string | null;
-  current_step: string | null;
-  last_run: RunRecord | null;
-}
-
-interface RunFinding {
-  entity: string;
-  entity_type: string;
-  type: string;
-  severity: string;
-  confidence: number;
-  mitre_attack: string[];
-}
-
-interface RunDetail {
-  run_id: string;
-  started_at: string;
-  finished_at: string | null;
-  success: boolean;
-  anomaly_count: number | null;
-  findings_count: number | null;
-  step_durations: Record<string, number> | null;
-  anomalies?: { entity: string; severity: string; detection_method: string; timestamp: string; details: string }[];
-  findings?: RunFinding[];
-  supervisor_narrative?: string | null;
-}
+// R-4: these types are GENERATED from the FastAPI response models
+// (scripts/generate_api_types.py). The hand-copied interfaces this
+// replaced had drifted — one declared field (duration_ms) never
+// existed on run records at all.
+type RunRecord = components['schemas']['RunRecordResponse'];
+type PipelineStatus = components['schemas']['PipelineStatus'];
+type RunHistoryResponse = components['schemas']['RunHistoryResponse'];
 
 export default function Pipeline() {
   const [status, setStatus] = useState<PipelineStatus | null>(null);
@@ -65,7 +32,7 @@ export default function Pipeline() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [history.length]);
-  const [runDetail, setRunDetail] = useState<RunDetail | null>(null);
+  const [runDetail, setRunDetail] = useState<RunRecord | null>(null);
 
   const toggleRun = (runId: string) => {
     if (expandedRun === runId) {
@@ -75,7 +42,7 @@ export default function Pipeline() {
     }
     setExpandedRun(runId);
     setRunDetail(null);
-    apiFetch<RunDetail>(`/api/pipeline/runs/${runId.slice(0, 8)}`)
+    apiFetch<RunRecord>(`/api/pipeline/runs/${runId.slice(0, 8)}`)
       .then(setRunDetail)
       .catch(() => {});
   };
@@ -87,7 +54,7 @@ export default function Pipeline() {
   };
 
   const fetchHistory = () => {
-    apiFetch<{ runs: RunRecord[] }>('/api/pipeline/history?limit=20')
+    apiFetch<RunHistoryResponse>('/api/pipeline/history?limit=20')
       .then((data) => setHistory(data.runs))
       .catch(() => {});
   };
@@ -237,7 +204,7 @@ export default function Pipeline() {
               {status.last_run && (
                 <span style={{ marginLeft: 12, fontFamily: 'var(--font-display)', fontSize: 12, color: 'var(--text-tertiary)' }}>
                   Last run: {status.last_run.success ? '✓' : '✗'} ·
-                  {status.last_run.duration_ms ? ` ${Math.round(status.last_run.duration_ms / 1000)}s` : ''} ·
+                  {runDuration(status.last_run) ? ` ${runDuration(status.last_run)}s` : ''} ·
                   {status.last_run.anomaly_count} anomalies · {status.last_run.findings_count} findings
                 </span>
               )}
@@ -290,7 +257,7 @@ export default function Pipeline() {
                         {expandedRun === run.run_id ? '▾' : '▸'} {run.run_id.slice(0, 8)}
                       </td>
                       <td>{run.started_at ? new Date(run.started_at).toLocaleString() : '—'}</td>
-                      <td>{run.duration_ms ? `${Math.round(run.duration_ms / 1000)}s` : '—'}</td>
+                      <td>{runDuration(run) ? `${runDuration(run)}s` : '—'}</td>
                       <td>{Array.isArray(run.log_types) ? run.log_types.join(', ') : run.log_types}</td>
                       <td>{run.anomaly_count}</td>
                       <td
@@ -300,6 +267,15 @@ export default function Pipeline() {
                         <span className={`badge ${run.success ? 'badge-resolved' : 'badge-critical'}`}>
                           {run.success ? 'OK' : 'FAIL'}
                         </span>
+                        {(run.degradations?.length ?? 0) > 0 && (
+                          <span
+                            className="tag"
+                            title={`Degraded steps (A22): ${run.degradations.join(', ')} — the run completed, but these steps fell back. See the run detail.`}
+                            style={{ marginLeft: 6, fontSize: 10, borderColor: 'var(--warning-border, #b8860b)', color: 'var(--warning, #b8860b)' }}
+                          >
+                            ⚠ {run.degradations.length}
+                          </span>
+                        )}
                       </td>
                     </tr>
                     {expandedRun === run.run_id && (
@@ -321,11 +297,13 @@ export default function Pipeline() {
 }
 
 /**
- * Inline run-detail expansion (UI-4): step timeline, findings summary,
- * supervisor narrative, anomaly sample, created incidents. Old runs
- * (pre-UI-2/UI-4 data) degrade gracefully with explicit labels.
+ * Inline run-detail expansion (UI-4 + Phase 1): step timeline,
+ * degradations panel (A3), findings summary, supervisor narrative,
+ * anomaly table with raw_score vs threshold_in_effect (A4/N10) and
+ * event_ids (N7). Old runs (pre-UI-2/UI-4 data) degrade gracefully
+ * with explicit labels.
  */
-function RunDetailPanel({ detail }: { detail: RunDetail | null }) {
+function RunDetailPanel({ detail }: { detail: RunRecord | null }) {
   if (!detail) return <div className="loading">Loading run detail…</div>;
 
   const hasDetailedData = detail.findings !== undefined || detail.anomalies !== undefined;
@@ -351,6 +329,34 @@ function RunDetailPanel({ detail }: { detail: RunDetail | null }) {
               </div>
             );
           })}
+        </div>
+      )}
+
+      {/* Degradations (A3/A22): when something breaks quietly, the
+          system tells you loudly — which step degraded and what the
+          fallback was. Absent on pre-A22 runs. */}
+      {detail.degradations && detail.degradations.length > 0 && (
+        <div style={{ marginBottom: 12, padding: 8, border: '1px solid var(--border)', background: 'var(--bg-tertiary)' }}>
+          <div className="method-label" style={{ marginTop: 0 }}>
+            ⚠ Degraded steps ({detail.degradations.length}) — run completed with fallbacks
+          </div>
+          {detail.degradations.map((d) => (
+            <div key={d} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0', fontSize: 11 }}>
+              <span className="tag" style={{ fontSize: 10, borderColor: 'var(--warning-border, #b8860b)', color: 'var(--warning, #b8860b)' }}>
+                {d}
+              </span>
+              <span style={{ color: 'var(--text-tertiary)' }}>
+                {DEGRADATION_FALLBACKS[d] ?? 'exception during this step — output retained from a previous state'}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+      {detail.degradations && detail.degradations.length === 0 && hasDetailedData && (
+        <div style={{ marginBottom: 12 }}>
+          <span className="tag" style={{ fontSize: 10, borderColor: 'var(--border)', color: 'var(--text-secondary)' }}>
+            DEGRADATIONS: NONE
+          </span>
         </div>
       )}
 
@@ -391,22 +397,62 @@ function RunDetailPanel({ detail }: { detail: RunDetail | null }) {
         </div>
       )}
 
-      {/* Anomaly sample */}
+      {/* Anomaly table (A4/N10/N7): raw score vs threshold in effect —
+          the honest calibration view — plus distinct source events. */}
       {detail.anomalies && detail.anomalies.length > 0 && (
         <div>
-          <div className="method-label">Anomaly sample ({detail.anomalies.length} — detectors fired before correlation)</div>
-          {detail.anomalies.slice(0, 8).map((a, i) => (
-            <div key={i} style={{ display: 'flex', gap: 8, padding: '2px 0', fontSize: 11 }}>
-              <span className={`badge badge-${a.severity}`} style={{ fontSize: 9 }}>{a.severity}</span>
-              <span style={{ fontFamily: 'var(--font-display)', color: 'var(--accent)' }}>{a.detection_method}</span>
-              <span style={{ color: 'var(--text-secondary)' }}>{a.entity}</span>
-              <span style={{ color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
-                {a.timestamp ? new Date(a.timestamp).toLocaleTimeString() : ''}
-              </span>
-            </div>
-          ))}
+          <div className="method-label">Anomalies ({detail.anomalies.length} — detectors fired before correlation)</div>
+          <div className="table-container" style={{ border: '1px solid var(--border)' }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Entity</th>
+                  <th>Method</th>
+                  <th>Raw score</th>
+                  <th>Threshold</th>
+                  <th>Severity</th>
+                  <th>Events</th>
+                </tr>
+              </thead>
+              <tbody>
+                {detail.anomalies.slice(0, 12).map((a, i) => (
+                  <tr key={a.anomaly_id || i}>
+                    <td style={{ color: 'var(--accent)', fontFamily: 'var(--font-display)' }}>{a.entity || '—'}</td>
+                    <td style={{ fontFamily: 'var(--font-display)' }}>{a.detection_method}</td>
+                    <td style={{ fontFamily: 'var(--font-display)', color: a.raw_score != null ? 'var(--danger)' : 'var(--text-tertiary)' }}>
+                      {a.raw_score != null ? a.raw_score.toFixed(3) : '—'}
+                    </td>
+                    <td style={{ fontFamily: 'var(--font-display)', color: 'var(--text-secondary)' }}>
+                      {a.threshold_in_effect != null ? a.threshold_in_effect.toFixed(2) : '—'}
+                    </td>
+                    <td><span className={`badge badge-${a.severity}`} style={{ fontSize: 9 }}>{a.severity}</span></td>
+                    <td
+                      style={{ fontFamily: 'var(--font-display)', color: 'var(--text-secondary)' }}
+                      title={a.event_ids?.length ? `Distinct source event_ids (N7):\n${a.event_ids.join('\n')}` : 'No event_ids on this anomaly (predates N7 stamping)'}
+                    >
+                      {a.event_ids?.length ?? 0}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 10, color: 'var(--text-tertiary)', marginTop: 4 }}>
+            EVENTS = distinct source event_ids attached to the anomaly (N7). "—" = not calibratable (N10) or predates raw-score emission.
+          </div>
         </div>
       )}
     </div>
   );
 }
+
+/**
+ * A22: the four analytics paths that can degrade. The fallback copy is
+ * what actually happened — visible in the run detail, not silent.
+ */
+const DEGRADATION_FALLBACKS: Record<string, string> = {
+  baseline_snapshot: 'exception during baseline snapshot — baselines retained from previous state',
+  entity_profiles: 'exception during entity profiling — profiles retained from previous state',
+  incident_persistence: 'exception during incident persistence — incidents may be missing from this run',
+  risk_scores: 'exception during scoring — scores retained from previous run',
+};

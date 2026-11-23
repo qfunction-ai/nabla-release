@@ -1,6 +1,6 @@
 services:
   letta:
-    image: ghcr.io/qfunction-ai/letta-local:0.16.31@sha256:cbb12673092261e5ef0654ec6805a9c3bdbdbe57acc97cda364c2d8bb47e489e
+    image: ghcr.io/qfunction-ai/letta-local:0.16.38@sha256:8b62fefba0e08a8b0185255ee43d78eb3049846ca28d4d8c8b8573efae0d3bc4
     ports:
       - "127.0.0.1:8284:8283"
     environment:
@@ -13,6 +13,14 @@ services:
       # D8: canary enabled by default — untrusted log content reaches the LLM;
       # opt out explicitly if the latency cost matters in your environment
       - LETTA_CANARY_ENABLED=${LETTA_CANARY_ENABLED:-true}
+      # Secure mode is the default in 0.16.38; explicit here to document
+      # intent and keep the password mapping visible. One value, two env
+      # names: the operator sets NABLA_LETTA_API_KEY in .env; compose maps
+      # it to the server password.
+      # Fail-loud on purpose: an unset key must not boot into an unauthable
+      # state (server generates its own password, nothing can talk to it).
+      - LETTA_SERVER_SECURE=true
+      - "LETTA_SERVER_PASSWORD=${NABLA_LETTA_API_KEY:?required - generate with openssl rand -base64 32}"
     volumes:
       - letta_data:/root/.letta
     healthcheck:
@@ -94,7 +102,10 @@ services:
       - NABLA_SUMOLOGIC_ENDPOINT_QUERY=${NABLA_SUMOLOGIC_ENDPOINT_QUERY:-}
       # ── N8 (round 4): every Settings field reaches the service —
       # reachability is mechanical; the plumbing guard enforces it
-      - NABLA_LETTA_API_KEY=${NABLA_LETTA_API_KEY:-}
+      - "NABLA_LETTA_API_KEY=${NABLA_LETTA_API_KEY:?required - generate with openssl rand -base64 32}"
+      # F-1: shipped ATT&CK bundle (course fixtures) — hermetic snapshot
+      # builds. Empty default = pinned network download.
+      - NABLA_ATTACK_BUNDLE_LOCAL_PATH=${NABLA_ATTACK_BUNDLE_LOCAL_PATH:-}
       - NABLA_TOOL_LETTA_URL=${NABLA_TOOL_LETTA_URL:-}
       - NABLA_LETTA_MAX_CONTEXT_WINDOW=${NABLA_LETTA_MAX_CONTEXT_WINDOW:-32768}
       - NABLA_LETTA_COMPACTION_MODEL=${NABLA_LETTA_COMPACTION_MODEL:-}

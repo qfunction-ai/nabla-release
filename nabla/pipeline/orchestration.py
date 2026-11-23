@@ -108,7 +108,19 @@ def _compact_anomaly(a: dict) -> dict:
         # score compared against the threshold (gate 8 — calibrate() cannot
         # pick a precision-meeting threshold without it).
         "raw_score": a.get("raw_score"),
+        # N7/A4: distinct source event_ids attached to the anomaly — the
+        # run detail shows them (capped for the summary; the full list
+        # lives on the anomaly itself).
+        "event_ids": list(a.get("event_ids") or [])[:8],
+        # N10/A4: the threshold the method was using when it fired —
+        # raw_score vs threshold_in_effect is the honest calibration view.
+        "threshold_in_effect": _threshold_in_effect_for(a),
     }
+
+
+def _threshold_in_effect_for(anomaly: dict) -> float | None:
+    from nabla.rl.calibration import threshold_in_effect_for
+    return threshold_in_effect_for(anomaly)
 
 
 def _summarize_anomalies_for_run(detection, anomaly_count: int) -> list[dict]:

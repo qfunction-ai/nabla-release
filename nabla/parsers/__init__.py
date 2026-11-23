@@ -212,11 +212,19 @@ def normalize_entries(
                 # Keep unmapped fields as-is (might be useful for detection)
                 entry[raw_key] = raw_value
 
-        # Set log type
+        # Set log type. An explicit per-event type (from the log_type /
+        # type field mapping) is PRESERVED — the file-level inference
+        # below only fills entries that carry no type of their own.
+        # (P4-1, found live in migration Phase 4: the old code defaulted
+        # untyped entries to "auth" and then the inference pass clobbered
+        # EVERY entry with one guess from the first entry's fields — a
+        # mixed course day-file's 13,960 endpoint + 5,020 auth events
+        # all normalized to "network", so endpoint-gated detectors never
+        # fired on file-ingested data and clip 12 could not fire.)
         if log_type:
             entry["type"] = log_type
         elif "type" not in entry:
-            entry["type"] = "auth"
+            entry["type"] = None  # filled by the inference pass below
 
         # Normalize timestamp — convert epoch to ISO if needed
         ts = entry.get("timestamp", "")
@@ -225,11 +233,13 @@ def normalize_entries(
 
         normalized.append(entry)
 
-    # Infer log type if not specified
+    # Infer log type if not specified — fills ONLY untyped entries;
+    # explicit per-event types survive.
     if not log_type:
         inferred = infer_log_type(normalized)
         for entry in normalized:
-            entry["type"] = inferred
+            if not entry.get("type"):
+                entry["type"] = inferred
         logger.info("Inferred log type: %s", inferred)
 
     logger.info(

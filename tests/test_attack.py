@@ -354,55 +354,68 @@ class TestBuildToolNameIndex:
 
 
 class TestDownloadAttackBundle:
-    """Tests for STIX bundle download and freshness logic."""
+    """F-1 (final review): the pinned-bundle resolution order and the
+    mandatory hash check. The pin kills age-based refresh — a pinned
+    bundle never goes stale; a WRONG-hash bundle refetches."""
 
-    def test_fresh_file_returns_existing_path(self, tmp_path, monkeypatch):
-        """Fresh file exists (age < refresh_days) → returns existing path, no download."""
+    def _pin_to(self, monkeypatch, content: bytes) -> None:
+        """Pin ATTACK_STIX_SHA256 to the given content's hash."""
+        monkeypatch.setattr("nabla.attack.ATTACK_STIX_SHA256",
+                            hashlib.sha256(content).hexdigest())
+
+    def test_pinned_file_returns_existing_path(self, tmp_path, monkeypatch):
+        """Existing file whose hash matches the pin → returned, no fetch.
+        Age is irrelevant under a pin: the file could be years old."""
+        content = b'{"type": "bundle"}'
         bundle_file = tmp_path / "enterprise-attack.json"
-        bundle_file.write_text('{"type": "bundle"}')
+        bundle_file.write_bytes(content)
+        # Make it "stale" — 60 days old. The pin does not care.
+        import time as _t
+        old = _t.time() - 60 * 86400
+        import os as _os
+        _os.utime(bundle_file, (old, old))
+        self._pin_to(monkeypatch, content)
 
-        # Mock httpx.get to raise if called (proving no download happens)
         monkeypatch.setattr("httpx.get", mock.MagicMock(
-            side_effect=AssertionError("Should not download")
-        ))
+            side_effect=AssertionError("Should not fetch")))
 
-        result = download_attack_bundle(str(tmp_path), refresh_days=30)
-        assert result == str(tmp_path / "enterprise-attack.json")
+        result = download_attack_bundle(str(tmp_path))
+        assert result == str(bundle_file)
 
-    def test_stale_file_downloads_new_copy(self, tmp_path, monkeypatch):
-        """Stale file exists (age >= refresh_days) → downloads new copy."""
-        bundle_file = tmp_path / "enterprise-attack.json"
-        bundle_file.write_text('{"type": "old_bundle"}')
-        # Set mtime to 60 days ago
-        old_time = time.time() - 60 * 86400
-        os.utime(bundle_file, (old_time, old_time))
+    def test_wrong_hash_file_refetches(self, tmp_path, monkeypatch):
+        """Existing file that does NOT match the pin → refetched."""
+        stale = b'{"type": "old_unpinned_bundle"}'
+        (tmp_path / "enterprise-attack.json").write_bytes(stale)
+        fresh = b'{"type": "pinned_bundle"}'
+        self._pin_to(monkeypatch, fresh)
 
         mock_resp = mock.MagicMock()
-        mock_resp.content = b'{"type": "new_bundle"}'
+        mock_resp.content = fresh
         mock_resp.raise_for_status = mock.MagicMock()
         monkeypatch.setattr("httpx.get", mock.MagicMock(return_value=mock_resp))
 
-        result = download_attack_bundle(str(tmp_path), refresh_days=30)
-        assert result == str(tmp_path / "enterprise-attack.json")
-        with open(result) as f:
-            assert json.load(f) == {"type": "new_bundle"}
+        result = download_attack_bundle(str(tmp_path))
+        with open(result, "rb") as f:
+            assert f.read() == fresh
 
-    def test_missing_file_downloads_fresh_copy(self, tmp_path, monkeypatch):
-        """Missing file → downloads fresh copy."""
+    def test_missing_file_downloads_pinned_copy(self, tmp_path, monkeypatch):
+        """Missing file → network download from the pinned URL."""
+        content = b'{"type": "bundle"}'
+        self._pin_to(monkeypatch, content)
+
         mock_resp = mock.MagicMock()
-        mock_resp.content = b'{"type": "bundle"}'
+        mock_resp.content = content
         mock_resp.raise_for_status = mock.MagicMock()
         monkeypatch.setattr("httpx.get", mock.MagicMock(return_value=mock_resp))
 
-        result = download_attack_bundle(str(tmp_path), refresh_days=30)
+        result = download_attack_bundle(str(tmp_path))
         assert result == str(tmp_path / "enterprise-attack.json")
         assert (tmp_path / "enterprise-attack.json").exists()
 
     def test_sha256_mismatch_raises_value_error(self, tmp_path, monkeypatch):
         """SHA-256 mismatch → raises ValueError."""
         content = b'{"type": "bundle"}'
-        expected_hash = hashlib.sha256(b"different content").hexdigest()
-        monkeypatch.setattr("nabla.attack.ATTACK_STIX_SHA256", expected_hash)
+        self._pin_to(monkeypatch, b"different content")
 
         mock_resp = mock.MagicMock()
         mock_resp.content = content
@@ -410,31 +423,70 @@ class TestDownloadAttackBundle:
         monkeypatch.setattr("httpx.get", mock.MagicMock(return_value=mock_resp))
 
         with pytest.raises(ValueError, match="integrity check failed"):
-            download_attack_bundle(str(tmp_path), refresh_days=0)
+            download_attack_bundle(str(tmp_path))
 
-    def test_sha256_match_proceeds(self, tmp_path, monkeypatch):
-        """SHA-256 match → proceeds normally."""
-        content = b'{"type": "bundle"}'
-        expected_hash = hashlib.sha256(content).hexdigest()
-        monkeypatch.setattr("nabla.attack.ATTACK_STIX_SHA256", expected_hash)
+    def test_empty_pin_is_a_configuration_error(self, tmp_path, monkeypatch):
+        """F-1: an empty ATTACK_STIX_SHA256 must raise — the old code
+        logged the hash and suggested pinning it later, which is the
+        supply-chain pattern this fix exists to remove."""
+        monkeypatch.setattr("nabla.attack.ATTACK_STIX_SHA256", "")
 
         mock_resp = mock.MagicMock()
-        mock_resp.content = content
+        mock_resp.content = b'{"type": "bundle"}'
         mock_resp.raise_for_status = mock.MagicMock()
         monkeypatch.setattr("httpx.get", mock.MagicMock(return_value=mock_resp))
 
-        result = download_attack_bundle(str(tmp_path), refresh_days=0)
-        assert result == str(tmp_path / "enterprise-attack.json")
-        assert (tmp_path / "enterprise-attack.json").exists()
+        with pytest.raises(ValueError, match="mandatory"):
+            download_attack_bundle(str(tmp_path))
+
+    def test_shipped_copy_preferred_over_network(self, tmp_path, monkeypatch):
+        """settings.attack_bundle_local_path set + valid → copied, no
+        network. Course snapshot builds never depend on GitHub."""
+        content = b'{"type": "pinned_bundle"}'
+        self._pin_to(monkeypatch, content)
+        shipped = tmp_path / "shipped"
+        shipped.mkdir()
+        shipped_file = shipped / "enterprise-attack.json"
+        shipped_file.write_bytes(content)
+
+        class _S:
+            attack_bundle_local_path = str(shipped_file)
+        # get_settings is imported inside the function from nabla.config
+        monkeypatch.setattr("nabla.config.get_settings", lambda: _S())
+
+        monkeypatch.setattr("httpx.get", mock.MagicMock(
+            side_effect=AssertionError("Should not fetch — shipped copy exists")))
+
+        result = download_attack_bundle(str(tmp_path / "data"))
+        assert (tmp_path / "data" / "enterprise-attack.json").exists()
+        with open(result, "rb") as f:
+            assert f.read() == content
+
+    def test_shipped_copy_mismatch_raises(self, tmp_path, monkeypatch):
+        """A shipped copy that fails the pin is rejected — shipping a
+        file does not bypass verification."""
+        self._pin_to(monkeypatch, b'{"type": "pinned_bundle"}')
+        shipped = tmp_path / "shipped"
+        shipped.mkdir()
+        (shipped / "enterprise-attack.json").write_bytes(b'{"type": "wrong_version"}')
+
+        class _S:
+            attack_bundle_local_path = str(shipped / "enterprise-attack.json")
+        monkeypatch.setattr("nabla.config.get_settings", lambda: _S())
+
+        with pytest.raises(ValueError, match="integrity check failed"):
+            download_attack_bundle(str(tmp_path / "data"))
 
     def test_httpx_failure_propagates(self, tmp_path, monkeypatch):
         """httpx.get failure → propagates exception."""
+        content = b'{"type": "bundle"}'
+        self._pin_to(monkeypatch, content)
         monkeypatch.setattr("httpx.get", mock.MagicMock(
             side_effect=ConnectionError("Network unreachable")
         ))
 
         with pytest.raises(ConnectionError, match="Network unreachable"):
-            download_attack_bundle(str(tmp_path), refresh_days=0)
+            download_attack_bundle(str(tmp_path))
 
 
 # ---------------------------------------------------------------------------

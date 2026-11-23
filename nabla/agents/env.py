@@ -1,44 +1,52 @@
-"""Agent configuration overrides via the Letta REST API."""
+"""Agent configuration overrides via the Letta SDK client.
 
-import httpx
+MR-2 (migration review): ONE authenticated HTTP path to Letta. These two
+overrides were raw httpx.patch calls with no auth header — a 401 under
+v0.16.38 secure mode that killed bootstrap, and the pattern that caused
+it (a raw call skipping the client's authentication). letta-client
+1.10.3 exposes both fields on agents.update, so they route through the
+shared client: base URL, timeout and authentication all come from one
+place, and the no-raw-Letta-HTTP guard (tests/test_no_raw_letta_http.py)
+keeps the pattern dead.
+"""
 
+from nabla.client import get_client
 from nabla.log import get_logger
 
 logger = get_logger("env")
 
 
-def set_agent_compaction_model(
-    agent_id: str,
-    model: str,
-    letta_base_url: str = "http://localhost:8284",
-) -> None:
+def set_agent_compaction_model(agent_id: str, model: str) -> None:
     """Override the compaction model for an agent.
 
     Works around Letta bug #3270: compaction uses a different tokenizer
     than the inference model, causing incorrect token counting and
     premature context truncation. Setting compaction_settings.model
     to the same model handle fixes this.
+
+    The SDK serializes exactly what the old raw patch sent —
+    {"compaction_settings": {"model": model}} — witnessed on the wire
+    (W3). Unpassed fields are omitted (Fern omit semantics), so this
+    is a partial update that cannot wipe the agent (W4).
     """
-    resp = httpx.patch(
-        f"{letta_base_url}/v1/agents/{agent_id}",
-        json={"compaction_settings": {"model": model}},
-        timeout=30.0,
-    )
-    if resp.status_code >= 400:
-        logger.error(
-            "Failed to set compaction model for agent %s: %s",
-            agent_id[:8], resp.text[:200],
+    try:
+        get_client().agents.update(
+            agent_id=agent_id,
+            compaction_settings={"model": model},
         )
-        resp.raise_for_status()
-    else:
-        logger.info("Set compaction model for agent %s to %s", agent_id[:8], model)
+    except Exception:
+        logger.error(
+            "Failed to set compaction model for agent %s", agent_id[:8],
+            exc_info=True,
+        )
+        raise
+    logger.info("Set compaction model for agent %s to %s", agent_id[:8], model)
 
 
 def fix_embedding_model_prefix(
     agent_id: str,
     correct_model: str,
     embedding_endpoint: str = "http://host.docker.internal:11434/v1",
-    letta_base_url: str = "http://localhost:8284",
 ) -> None:
     """Fix the embedding model name to remove the 'ollama/' prefix.
 
@@ -47,26 +55,23 @@ def fix_embedding_model_prefix(
     (e.g., 'embeddinggemma:latest', not 'ollama/embeddinggemma:latest').
     This causes 404 errors when creating passages.
 
-    Must be called after agent creation via the REST API since the SDK
-    doesn't expose a way to set the raw embedding_model string.
+    letta-client 1.10.3 exposes embedding_config on agents.update, so the
+    raw REST call is gone; the payload is byte-identical (W3).
     """
-    resp = httpx.patch(
-        f"{letta_base_url}/v1/agents/{agent_id}",
-        json={
-            "embedding_config": {
+    try:
+        get_client().agents.update(
+            agent_id=agent_id,
+            embedding_config={
                 "embedding_model": correct_model,
                 "embedding_endpoint": embedding_endpoint,
                 "embedding_endpoint_type": "ollama",
                 "embedding_dim": 4096,
             },
-        },
-        timeout=30.0,
-    )
-    if resp.status_code >= 400:
-        logger.error(
-            "Failed to fix embedding model for agent %s: %s",
-            agent_id[:8], resp.text[:200],
         )
-        resp.raise_for_status()
-    else:
-        logger.info("Fixed embedding model for agent %s to %s", agent_id[:8], correct_model)
+    except Exception:
+        logger.error(
+            "Failed to fix embedding model for agent %s", agent_id[:8],
+            exc_info=True,
+        )
+        raise
+    logger.info("Fixed embedding model for agent %s to %s", agent_id[:8], correct_model)

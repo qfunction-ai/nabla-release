@@ -11,21 +11,26 @@ read the block at runtime — they cannot import mitreattack-python.
 
 import hashlib
 import os
-import time
 from pathlib import Path
 
 from nabla.log import get_logger
 
 logger = get_logger("attack")
 
-# STIX bundle URL (Enterprise ATT&CK from MITRE CTI repo)
+# STIX bundle — PINNED (F-1, final review). The old source was
+# mitre/cti master (a moving branch) with an empty hash: snapshots built
+# on different days checked against different ATT&CK releases, breaking
+# D-21's same-state promise, and an unverified download from a moving
+# branch is the supply-chain pattern the course teaches against.
+# mitre-attack/attack-stix-data carries versioned tags; the hash makes
+# the pin verifiable. Bump BOTH constants together, and the shipped copy
+# (course-assets/attack/), when a new ATT&CK release is wanted.
+ATTACK_STIX_VERSION = "20.1"
 ATTACK_STIX_URL = (
-    "https://raw.githubusercontent.com/mitre/cti/master/"
-    "enterprise-attack/enterprise-attack.json"
+    "https://raw.githubusercontent.com/mitre-attack/attack-stix-data/"
+    "v20.1/enterprise-attack/enterprise-attack.json"
 )
-
-# Expected SHA-256 of the STIX bundle (updated periodically — empty string skips check)
-ATTACK_STIX_SHA256 = ""  # Set to expected hash to enable integrity verification
+ATTACK_STIX_SHA256 = "539a843a7b53ed9749740b2123dddae3726b1a4831841c32aca740b011b910b5"
 
 # Nabla anomaly type → ATT&CK technique IDs
 ANOMALY_TO_TECHNIQUES = {
@@ -52,12 +57,46 @@ ALL_TECHNIQUE_IDS = sorted(
 )
 
 
-def download_attack_bundle(data_dir: str, refresh_days: int = 30) -> str:
-    """Download the Enterprise ATT&CK STIX bundle if missing or stale.
+def _file_sha256(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _verify_bundle_hash(content: bytes) -> None:
+    """The pin is mandatory (F-1): an unverified bundle is a supply-chain
+    hole, and an empty pin is a configuration error, not a skip."""
+    if not ATTACK_STIX_SHA256:
+        raise ValueError(
+            "ATTACK_STIX_SHA256 must be set — the ATT&CK bundle pin is mandatory"
+        )
+    actual = hashlib.sha256(content).hexdigest()
+    if actual != ATTACK_STIX_SHA256:
+        logger.error(
+            "ATT&CK STIX bundle integrity check FAILED: expected %s, got %s. "
+            "The bundle may be corrupted, tampered with, or from a different "
+            "ATT&CK release than the pin.",
+            ATTACK_STIX_SHA256, actual,
+        )
+        raise ValueError("ATT&CK STIX bundle integrity check failed — hash mismatch")
+
+
+def download_attack_bundle(data_dir: str) -> str:
+    """Return the path to the pinned Enterprise ATT&CK STIX bundle.
+
+    Resolution order (F-1):
+      1. The data_dir copy, if its SHA-256 matches the pin — a pinned
+         bundle never goes stale, so there is no age-based refresh.
+      2. A shipped copy (settings.attack_bundle_local_path) — course
+         snapshot builds use this and never touch GitHub.
+      3. Network download from the pinned, tagged URL.
+
+    Every source is hash-verified; the check cannot be skipped.
 
     Args:
         data_dir: Directory to store the bundle file.
-        refresh_days: Re-download if the file is older than this many days.
 
     Returns:
         Path to the STIX bundle file.
@@ -65,11 +104,34 @@ def download_attack_bundle(data_dir: str, refresh_days: int = 30) -> str:
     bundle_path = os.path.join(data_dir, "enterprise-attack.json")
 
     if os.path.exists(bundle_path):
-        age_days = (time.time() - os.path.getmtime(bundle_path)) / 86400
-        if age_days < refresh_days:
-            logger.info("ATT&CK bundle is fresh (%.0f days old), skipping download", age_days)
+        if _file_sha256(bundle_path) == ATTACK_STIX_SHA256:
+            logger.info(
+                "ATT&CK bundle present and matches the pin (v%s), skipping fetch",
+                ATTACK_STIX_VERSION,
+            )
             return bundle_path
+        logger.warning(
+            "ATT&CK bundle in data_dir does not match the pin (v%s) — refetching",
+            ATTACK_STIX_VERSION,
+        )
 
+    # 2. Shipped copy (course fixtures): hermetic snapshot builds.
+    from nabla.config import get_settings
+
+    local_path = get_settings().attack_bundle_local_path
+    if local_path and os.path.exists(local_path):
+        content = Path(local_path).read_bytes()
+        _verify_bundle_hash(content)
+        Path(data_dir).mkdir(parents=True, exist_ok=True)
+        with open(bundle_path, "wb") as f:
+            f.write(content)
+        logger.info(
+            "ATT&CK bundle copied from shipped copy %s (v%s, no network)",
+            local_path, ATTACK_STIX_VERSION,
+        )
+        return bundle_path
+
+    # 3. Network download from the pinned tag.
     logger.info("Downloading ATT&CK STIX bundle from %s", ATTACK_STIX_URL)
     from nabla.ssrf import follow_get_redirects_safe
 
@@ -83,26 +145,11 @@ def download_attack_bundle(data_dir: str, refresh_days: int = 30) -> str:
 
     resp.raise_for_status()
 
-    # Verify integrity if a checksum is configured
+    # Verify integrity — mandatory
     content = resp.content
-    actual_hash = hashlib.sha256(content).hexdigest()
-
-    if ATTACK_STIX_SHA256:
-        if actual_hash != ATTACK_STIX_SHA256:
-            logger.error(
-                "ATT&CK STIX bundle integrity check FAILED: expected %s, got %s. "
-                "The download may be corrupted or tampered with.",
-                ATTACK_STIX_SHA256, actual_hash,
-            )
-            raise ValueError("ATT&CK STIX bundle integrity check failed — hash mismatch")
-        logger.info("ATT&CK STIX bundle integrity verified (SHA-256 match)")
-    else:
-        # Log the hash so operators can pin it for future runs
-        logger.info(
-            "ATT&CK STIX bundle SHA-256: %s — set ATTACK_STIX_SHA256 to this value "
-            "to enable integrity verification on future downloads",
-            actual_hash,
-        )
+    _verify_bundle_hash(content)
+    logger.info("ATT&CK STIX bundle integrity verified (SHA-256 match, v%s)",
+                ATTACK_STIX_VERSION)
 
     Path(data_dir).mkdir(parents=True, exist_ok=True)
     with open(bundle_path, "wb") as f:
@@ -111,8 +158,9 @@ def download_attack_bundle(data_dir: str, refresh_days: int = 30) -> str:
     # Also verify the written file matches (detect disk corruption)
     with open(bundle_path, "rb") as f:
         disk_hash = hashlib.sha256(f.read()).hexdigest()
-    if disk_hash != actual_hash:
-        logger.error("ATT&CK STIX bundle on-disk hash mismatch: %s vs %s", actual_hash, disk_hash)
+    if disk_hash != ATTACK_STIX_SHA256:
+        logger.error("ATT&CK STIX bundle on-disk hash mismatch: %s vs %s",
+                     ATTACK_STIX_SHA256, disk_hash)
         os.unlink(bundle_path)
         raise ValueError("ATT&CK STIX bundle on-disk integrity check failed")
 

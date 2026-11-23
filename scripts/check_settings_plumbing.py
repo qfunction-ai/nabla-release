@@ -39,6 +39,12 @@ OPERATOR_SET: set[str] = {
     "letta_compaction_model",
     # setup + dev
     "setup_token", "dev_mode",
+    # LettaLocal authentication (M-3, v0.16.38 migration) — one value,
+    # two env names: NABLA_LETTA_API_KEY in .env, mapped by compose to
+    # LETTA_SERVER_PASSWORD on the letta service.
+    "letta_api_key",
+    # F-1: shipped ATT&CK bundle path (course fixtures — hermetic builds)
+    "attack_bundle_local_path",
     # baselining behavior
     "baseline_days", "entity_warmup_observations", "new_account_grace_days",
     # site identity
@@ -111,6 +117,25 @@ def check() -> list[str]:
         problems.append(
             f".env.example must equal OPERATOR_SET exactly. "
             f"extra: {sorted(extra)} | missing: {sorted(missing)}"
+        )
+
+    # M-3 (v0.16.38 migration): the key must be fail-loud on both sides
+    # and mapped by name — an empty default silently boots into an
+    # unauthable state once the server runs secure mode.
+    compose_src = (ROOT / "docker-compose.yml").read_text()
+    if "LETTA_SERVER_PASSWORD=${NABLA_LETTA_API_KEY:?" not in compose_src:
+        problems.append(
+            "letta service must map LETTA_SERVER_PASSWORD from NABLA_LETTA_API_KEY "
+            "(fail-loud :? interpolation)"
+        )
+    if "NABLA_LETTA_API_KEY=${NABLA_LETTA_API_KEY:?" not in compose_src:
+        problems.append(
+            "nabla service must require NABLA_LETTA_API_KEY (fail-loud :? interpolation)"
+        )
+    if "NABLA_LETTA_API_KEY:-" in compose_src:
+        problems.append(
+            "NABLA_LETTA_API_KEY must not default to empty (:-) — that boots "
+            "into an unauthable state under secure mode"
         )
     return problems
 

@@ -109,7 +109,81 @@ class PipelineStatus(BaseModel):
     run_id: str | None = None
     started_at: str | None = None
     current_step: str | None = None
-    last_run: dict[str, Any] | None = None
+    last_run: "RunRecordResponse | None" = None
+
+
+class RunAnomalySummary(BaseModel):
+    """The compact anomaly shape persisted in run records (R-4: the API
+    contract is now declared, generated into frontend types, and drift
+    becomes a build error)."""
+
+    anomaly_id: str = ""
+    entity: str = ""
+    entity_type: str = "user"
+    severity: str = "medium"
+    timestamp: str = ""
+    detection_method: str = "unknown"
+    details: str = ""
+    categories: list[str] = []
+    mitre_attack: list[str] = []
+    raw_score: float | None = None
+    event_ids: list[str] = []
+    threshold_in_effect: float | None = None
+
+
+class RunFindingSummary(BaseModel):
+    entity: str = "unknown"
+    entity_type: str = "unknown"
+    type: str = "unknown"
+    severity: str = "medium"
+    confidence: float = 0.5
+    mitre_attack: list[str] = []
+
+
+class RunLayerCounts(BaseModel):
+    base: int = 0
+    gcn_lof: int = 0
+    provenance: int = 0
+    temporal: int = 0
+    exfiltration: int = 0
+
+
+class RunRecordResponse(BaseModel):
+    """One run record. Every field the record can carry is declared —
+    response models drop undeclared fields, so this IS the contract.
+    Old records (persisted before a field existed) validate via the
+    defaults."""
+
+    run_id: str
+    started_at: str
+    finished_at: str | None = None
+    source: str = "auto"
+    operator: str = ""
+    watchlist_groups: list[str] | None = None
+    log_types: list[str] | str = "all"
+    log_count: int = 20
+    anomaly_count: int | None = None
+    findings_count: int | None = None
+    step_durations: dict[str, float] | None = None
+    success: bool = False
+    error: str | None = None
+    anomalies: list[RunAnomalySummary] = []
+    findings: list[RunFindingSummary] = []
+    degradations: list[str] = []
+    layer_counts: RunLayerCounts | None = None
+    temporal_stats: dict[str, Any] = {}
+    supervisor_narrative: str | None = None
+    # Course-ingest provenance (nabla ingest)
+    ingest_chunks: list[str] | None = None
+    ingest_siem_data: bool | None = None
+    ingest_frozen_baseline: bool | None = None
+
+
+class RunHistoryResponse(BaseModel):
+    runs: list[RunRecordResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +311,7 @@ async def get_status(_auth: None = Depends(require_user)):
     )
 
 
-@router.get("/history")
+@router.get("/history", response_model=RunHistoryResponse)
 async def get_history(
     limit: int = 20,
     offset: int = 0,
@@ -264,7 +338,7 @@ async def get_history(
     return {"runs": page, "total": total, "limit": limit, "offset": offset}
 
 
-@router.get("/runs/{run_id}")
+@router.get("/runs/{run_id}", response_model=RunRecordResponse)
 async def get_run_detail(
     run_id: str,
     _auth: None = Depends(require_user),
