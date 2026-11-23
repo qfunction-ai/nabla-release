@@ -348,6 +348,25 @@ function SupervisorReportCard({ detail }: { detail: Incident }) {
   // Legacy incidents predate the structured path — render nothing.
   if (status === undefined || status === null) return null;
 
+  // F-1 (round 11): beyond the per-run review cap. No report was ever
+  // requested — this is NOT a validation failure and must never read as
+  // one on camera.
+  if (status === 'capped') {
+    return (
+      <div className="card" style={{ marginBottom: 16, borderTop: '2px solid var(--accent-dim)' }}>
+        <div className="section-title" data-symbol="∇">SUPERVISOR ANALYSIS</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          <span className="tag" style={{ borderColor: 'var(--accent-border)', color: 'var(--accent)' }}>
+            NOT REVIEWED — BEYOND CAP
+          </span>{' '}
+          This run confirmed more findings than the per-run review cap shows; the
+          supervisor analyzed only the highest-severity findings. The deterministic
+          description above is the authoritative summary for this incident.
+        </div>
+      </div>
+    );
+  }
+
   if (status !== 'ok' || !report) {
     const reason =
       status === 'invalid'

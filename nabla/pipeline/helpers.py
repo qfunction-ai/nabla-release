@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -66,17 +65,6 @@ def _resolve_log_types(log_types: list[str] | str) -> list[str]:
     if "all" in log_types:
         return LOG_TYPES[:]
     return log_types
-
-
-def _extract_count(text: str) -> int | None:
-    """Try to extract a count from agent response text (e.g. '21 anomalies')."""
-    match = re.search(r"(\d+)\s+\w*\s*anomal", text, re.IGNORECASE)
-    if match:
-        return int(match.group(1))
-    match = re.search(r"(\d+)\s+\w*\s*finding", text, re.IGNORECASE)
-    if match:
-        return int(match.group(1))
-    return None
 
 
 def _read_baseline_host_procs() -> dict[str, list[str]]:

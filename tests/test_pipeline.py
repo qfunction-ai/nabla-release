@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 from nabla.pipeline import (
     _resolve_log_types,
-    _extract_count,
     _resolve_source,
     _extract_assistant_message,
     _read_baseline_host_procs,
@@ -48,23 +47,6 @@ def test_resolve_log_types_list_with_all():
     """'all' in a list expands to all types."""
     types = _resolve_log_types(["auth", "all"])
     assert types == ["auth", "network", "dns", "endpoint"]
-
-
-def test_extract_count_anomalies():
-    """Extract anomaly count from response text."""
-    assert _extract_count("Updated anomaly_queue with 21 anomalies") == 21
-    assert _extract_count("Detected 5 anomalies") == 5
-
-
-def test_extract_count_findings():
-    """Extract findings count from response text."""
-    assert _extract_count("Recorded 21 threat findings") == 21
-
-
-def test_extract_count_none():
-    """No count found returns None."""
-    assert _extract_count("No anomalies detected") is None
-    assert _extract_count("") is None
 
 
 def test_resolve_source_synthetic():
@@ -699,7 +681,7 @@ class TestLoadEnvironmentContext:
                 "joindomain": ["Exclusively used to join computers to the domain"],
             },
             "network_ranges": ["10.0.0.0/8"],
-            "new_accounts": ["jrivera", "joindomain"],
+            "new_accounts": ["helpdeskone", "joindomain"],
             "service_accounts": ["svc_backup"],
             "admin_accounts": ["admin"],
             "benign_patterns": ["certutil downloading known installer"],
@@ -712,7 +694,7 @@ class TestLoadEnvironmentContext:
             assert ctx["environment"] == ["Only one forest in the domain"]
             assert ctx["entities"] == {"joindomain": ["Exclusively used to join computers to the domain"]}
             assert ctx["network_ranges"] == ["10.0.0.0/8"]
-            assert ctx["new_accounts"] == {"jrivera", "joindomain"}
+            assert ctx["new_accounts"] == {"helpdeskone", "joindomain"}
             assert ctx["service_accounts"] == {"svc_backup"}
             assert ctx["admin_accounts"] == {"admin"}
             assert ctx["benign_patterns"] == ["certutil downloading known installer"]
@@ -905,13 +887,13 @@ class TestFormatEnvContextBlock:
             "environment": [],
             "entities": {},
             "network_ranges": [],
-            "new_accounts": {"jrivera", "joindomain"},
+            "new_accounts": {"helpdeskone", "joindomain"},
             "service_accounts": set(),
             "admin_accounts": set(),
             "benign_patterns": [],
         }
         text = _format_env_context_block(ctx, [])
-        assert "jrivera" in text
+        assert "helpdeskone" in text
         assert "joindomain" in text
         assert "grace period" in text.lower()
 

@@ -38,6 +38,36 @@ _MAX_OUTPUT_CHARS = 8000
 # degradation (threat_findings_capped), never silent truncation.
 MAX_BLOCK_FINDINGS = 25
 
+
+def _cap_findings_for_review(findings: list[dict]) -> tuple[list[dict], list[dict]]:
+    """F-1 (round 11): sort by loudness, keep the top MAX_BLOCK_FINDINGS.
+
+    The shown set is a pure function of the finding SET, never of its
+    input order: severity rank, then confidence descending, then the
+    (entity, type) tie-break. The caller keeps the FULL list for
+    save_incidents — incidents beyond the cap are still created, they
+    just carry review_status "capped".
+
+    Returns (shown, full) — the same full list passed in, unmodified.
+    """
+    from nabla.degradations import report_degradation
+    from nabla.utils import SEVERITY_ORDER
+
+    if len(findings) <= MAX_BLOCK_FINDINGS:
+        return findings, findings
+
+    ranked = sorted(
+        findings,
+        key=lambda f: (
+            SEVERITY_ORDER.get(f.get("severity", "medium"), 2),
+            -float(f.get("confidence", 0)),
+            f.get("entity", ""),
+            f.get("type", ""),
+        ),
+    )
+    report_degradation("threat_findings_capped")
+    return ranked[:MAX_BLOCK_FINDINGS], findings
+
 # --- Type labels for timeline narrative ---
 _TYPE_LABELS = {
     "lolbin_abuse": "suspicious use of living-off-the-land binaries (LOLBINs)",
@@ -680,6 +710,12 @@ def assess_findings(
         elif len(log_types) >= 2:
             score = 3
 
+        # F-1.2 (round 11): never DOWNGRADE a correlation that already
+        # carries critical severity — the cap keeps the loudest findings,
+        # and a flattened severity would hide the loudest from the sort.
+        if corr.get("severity") == "critical":
+            score = 4
+
         # Boost for critical anomaly types
         if anomaly_types & _CRITICAL_ANOMALY_TYPES:
             score = min(score + 1, 4)
@@ -736,6 +772,7 @@ def format_findings(
     findings: list[dict],
     entity_profiles=None,
     anomalies: list[dict] | None = None,
+    true_count: int | None = None,
 ) -> str:
     """Format findings as text for the threat_findings block.
 
@@ -753,14 +790,6 @@ def format_findings(
     Returns:
         Formatted text for the threat_findings block.
     """
-    from nabla.degradations import report_degradation
-
-    capped_count = 0
-    if len(findings) > MAX_BLOCK_FINDINGS:
-        capped_count = len(findings) - MAX_BLOCK_FINDINGS
-        report_degradation("threat_findings_capped")
-        findings = findings[:MAX_BLOCK_FINDINGS]
-
     def _baseline_clause(entity: str) -> str:
         if entity_profiles is None:
             return ""
@@ -792,7 +821,14 @@ def format_findings(
             if aid and a.get("details"):
                 anomaly_details[aid] = str(a["details"])
 
-    lines = [f"Confirmed threats: {len(findings)}"]
+    # F-1: the header carries the TRUE count and admits the cap on its
+    # face. The count is passed in as a VALUE by the caller — never
+    # regexed back out of this text.
+    shown_count = len(findings)
+    if true_count is None or true_count <= shown_count:
+        lines = [f"Confirmed threats: {shown_count}"]
+    else:
+        lines = [f"Confirmed threats: {true_count} (top {shown_count} shown)"]
     for f in findings:
         cross = f" ({f['cross_type']})" if f.get("cross_type") == "cross-type" else ""
 
@@ -864,12 +900,6 @@ def format_findings(
                 f"{_baseline_clause(f['entity'])} "
                 f"(confidence: {f['confidence']:.0%})"
             )
-        )
-
-    if capped_count:
-        lines.append(
-            f"\n[... {capped_count} more findings capped — "
-            "see run detail for the full list]"
         )
 
     return "".join(lines)
@@ -1393,9 +1423,12 @@ def run_correlation(
         attack_mapping_text: Raw text from the attack_mapping block.
 
     Returns:
-        Tuple of (findings_text, timeline_text, findings, correlations, attack_lookup).
-        The first two are formatted strings; the rest are structured data for
-        the explainability layer.
+        Tuple of (findings_text, timeline_text, findings, correlations,
+        attack_lookup, findings_shown). The first two are formatted
+        strings; `findings` is the FULL assessed list (save_incidents
+        needs every finding — incidents beyond the review cap are still
+        created, with review_status "capped"); `findings_shown` is the
+        capped subset that reached the block/prompt.
     """
     if not anomalies:
         return "Confirmed threats: none", "No anomalies found.", [], [], {}
@@ -1412,9 +1445,17 @@ def run_correlation(
     # Assess and enrich
     findings = assess_findings(correlations, attack_lookup)
 
+    # F-1 (round 11): cap ONCE, here. The shown set is sorted by
+    # loudness (severity, confidence, entity/type tie-break) so it is a
+    # pure function of the finding set — re-runs and re-recordings pick
+    # the identical shown set. The header admits the cap; the run record
+    # keeps the true count.
+    findings_shown, findings = _cap_findings_for_review(findings)
+
     # Format
     findings_text = format_findings(
-        findings, entity_profiles=entity_profiles, anomalies=anomalies
+        findings_shown, entity_profiles=entity_profiles, anomalies=anomalies,
+        true_count=len(findings),
     )
 
     # Build timeline from a severity-stratified subset to keep output small
@@ -1467,4 +1508,4 @@ def run_correlation(
             len(findings_text), len(timeline_text), _MAX_OUTPUT_CHARS,
         )
 
-    return findings_text, timeline_text, findings, correlations, attack_lookup
+    return findings_text, timeline_text, findings, correlations, attack_lookup, findings_shown

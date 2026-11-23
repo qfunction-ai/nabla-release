@@ -10,7 +10,6 @@ from nabla.pipeline.helpers import (
     _extract_assistant_message,
     _read_supervisor_blocks,
     _resolve_log_types,
-    _extract_count,
     _read_baseline_host_procs,
     _extract_host_processes_from_entries,
     _resolve_source,

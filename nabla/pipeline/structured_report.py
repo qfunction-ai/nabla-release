@@ -389,6 +389,7 @@ def attach_structured_reports(
     supervisor_text: str,
     findings_count: int,
     findings_text: str = "",
+    shown_keys: list[tuple[str, str]] | None = None,
 ) -> None:
     """Parse the supervisor output and attach per-incident reports IN PLACE.
 
@@ -396,10 +397,16 @@ def attach_structured_reports(
         ok       — a validated report matched and was resolved onto it
         invalid  — LLM output existed but no valid report matched
         absent   — no LLM output at all
+        capped   — this finding was beyond the review cap: no report was
+                   ever requested for it (F-1, round 11). NEVER reported
+                   as "invalid" — the report did not fail validation, it
+                   was never asked for.
 
     Matching: anomaly_id overlap first (strongest), entity name as
     fallback. Unmatched valid reports are logged, not forced.
     """
+    shown = set(shown_keys) if shown_keys is not None else None
+
     if not supervisor_text or not supervisor_text.strip():
         for inc in incidents:
             inc["review_status"] = "absent"
@@ -463,6 +470,23 @@ def attach_structured_reports(
         used_reports.add(ri)
 
     for ii, inc in enumerate(incidents):
+        # F-1 (round 11): incidents beyond the review cap get "capped" —
+        # no report was ever requested for them. This is decided BEFORE
+        # report matching: an unmatched beyond-cap incident is not a
+        # matching failure, and must never read as "invalid".
+        if shown is not None and (
+            (str(inc.get("entity", "")), str(inc.get("finding_type", "")))
+            not in shown
+        ):
+            inc.pop("supervisor_report", None)
+            inc["review_status"] = "capped"
+            inc["supervisor_report_meta"] = {
+                "invalid_elements": len(meta["invalid"]),
+                "parse_error": meta["parse_error"],
+                "reason": "finding beyond the per-run review cap — "
+                          "no report was requested for it",
+            }
+            continue
         ri = assigned_report.get(ii)
         if ri is not None:
             resolved = resolve_report(reports[ri], inc)

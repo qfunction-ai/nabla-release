@@ -12,7 +12,6 @@ from nabla.history import new_run, complete_run, save_run
 from nabla.ingest import store_baseline_snapshot
 from nabla.log import get_logger
 from nabla.pipeline.helpers import (
-    _extract_count,
     _extract_host_processes_from_entries,
     _resolve_log_types,
 )
@@ -450,7 +449,9 @@ def _run_pipeline_body(
         supervisor_text = run_supervisor(
             client=client,
             agents=agents,
-            findings_count=correlation.findings_count,
+            # F-1: the prompt asks for reports on the SHOWN findings only —
+            # findings_count here is the shown count, never the true count.
+            findings_count=correlation.findings_shown,
             findings_text=correlation.findings_text,
             phase=detection.phase,
         )
@@ -475,6 +476,9 @@ def _run_pipeline_body(
                     findings=correlation.findings,
                     supervisor_text=supervisor_text,
                     evidence_text=correlation.explanation_text,
+                    # F-1: which findings reached the review prompt —
+                    # incidents beyond it get "capped", not "invalid".
+                    shown_keys=correlation.shown_keys,
                 )
                 if new_incidents > 0:
                     logger.info("Incident persistence: %d new incidents saved", new_incidents)
@@ -548,7 +552,9 @@ def _run_pipeline_body(
 
         # ── Finalize run record ────────────────────────────────
         anomaly_count = len(detection.anomalies) if detection.anomalies else 0
-        findings_count = _extract_count(results["correlation"])
+        # F-1: the TRUE count, as a value from the correlation result —
+        # never regexed out of a log line.
+        findings_count = correlation.findings_count
         complete_run(
             run_record,
             anomaly_count=anomaly_count,

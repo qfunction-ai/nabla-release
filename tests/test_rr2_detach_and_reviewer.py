@@ -216,7 +216,38 @@ class TestReviewerReset:
 
 
 class TestFindingsCap:
+    """RR-2 cap, relocated F-1 (round 11): the cap fires ONCE, upstream in
+    _cap_findings_for_review — format_findings renders exactly what it is
+    given and never caps. The header admits the cap on its face."""
+
     def test_cap_renders_marker_and_degradation(self):
+        from nabla.correlation import (
+            format_findings, MAX_BLOCK_FINDINGS, _cap_findings_for_review,
+        )
+        findings = [
+            {
+                "finding_id": f"f-{i}", "entity": f"user{i}", "entity_type": "user",
+                "severity": "high", "type": "lolbin", "confidence": 0.9,
+                "anomaly_ids": ["anom-%03d" % i], "cross_type": "",
+                "mitre_attack": [], "tools_detected": ["certutil"],
+            }
+            for i in range(MAX_BLOCK_FINDINGS + 7)
+        ]
+        with collect_degradations(sink := []) as s:
+            shown, full = _cap_findings_for_review(findings)
+        assert s.count("threat_findings_capped") == 1, f"degradations: {s}"
+        assert len(shown) == MAX_BLOCK_FINDINGS
+        assert len(full) == MAX_BLOCK_FINDINGS + 7, "the FULL list must survive"
+        out = format_findings(shown, true_count=len(full))
+        # the header carries the TRUE count and admits the cap on its face
+        assert f"Confirmed threats: {MAX_BLOCK_FINDINGS + 7}" in out
+        assert f"(top {MAX_BLOCK_FINDINGS} shown)" in out
+        finding_lines = [l for l in out.split("\n") if l.startswith("[HIGH]")]
+        assert len(finding_lines) == MAX_BLOCK_FINDINGS
+
+    def test_format_findings_never_caps(self):
+        """The cap site is upstream — format_findings must render ALL of
+        whatever it is given (the F-1 relocation contract)."""
         from nabla.correlation import format_findings, MAX_BLOCK_FINDINGS
         findings = [
             {
@@ -229,9 +260,6 @@ class TestFindingsCap:
         ]
         with collect_degradations(sink := []) as s:
             out = format_findings(findings)
-        assert s.count("threat_findings_capped") == 1, f"degradations: {s}"
-        # finding lines rendered = cap, plus the loud marker
+        assert s.count("threat_findings_capped") == 0, f"degradations: {s}"
         finding_lines = [l for l in out.split("\n") if l.startswith("[HIGH]")]
-        assert len(finding_lines) == MAX_BLOCK_FINDINGS
-        assert "capped" in out, "no visible cap marker"
-        assert "7 more" in out, "marker must state how many were dropped"
+        assert len(finding_lines) == MAX_BLOCK_FINDINGS + 7

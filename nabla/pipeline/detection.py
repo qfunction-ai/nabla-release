@@ -57,8 +57,16 @@ def _load_lolbin_sigs(lolbin_db_text: str) -> list[tuple[str, list[str], list[st
     The check keys on the parse SOURCE — never on the block's text. A
     text-marker check lies in both directions (fires on cosmetic format
     changes, stays silent on a marker-present-but-empty section).
+
+    F-2 (round 11): lolbin_db_text=None means the READ itself failed
+    (e.g. the T-5 duplicate-label raise — block identity ambiguous).
+    That degrades to fallback signatures too; the run completes, the
+    run record learns.
     """
     from nabla.detection import parse_lolbin_block
+    if lolbin_db_text is None:
+        report_degradation("lolbin_index_not_loaded")
+        return parse_lolbin_block("")[0]
     sigs, source = parse_lolbin_block(lolbin_db_text)
     if source == "fallback":
         report_degradation("lolbin_index_not_loaded")
@@ -109,7 +117,16 @@ def run_detection(
     # state; no agent carries it in its context window anymore.
     from nabla.blocks import read_shared_block_value
 
-    lolbin_db_text = read_shared_block_value(client, "lolbin_db")
+    # F-2 (round 11): the read itself can raise (duplicate-label block —
+    # the T-5 RuntimeError is correct loudness for ambiguity). Degrade,
+    # never crash: the run completes on fallback signatures.
+    try:
+        lolbin_db_text = read_shared_block_value(client, "lolbin_db")
+    except Exception as e:
+        logger.warning(
+            "lolbin_db read failed (%s) — running on fallback signatures", e,
+        )
+        lolbin_db_text = None
     lolbin_sigs = _load_lolbin_sigs(lolbin_db_text)
 
     # Read historical baseline for unusual-process detection

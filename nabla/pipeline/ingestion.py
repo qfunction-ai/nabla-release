@@ -200,6 +200,11 @@ def run_ingestion(
                 lolbin_index = parse_lolbin_block(lolbin_text)
         except Exception as e:
             logger.warning("Could not read lolbin_db block: %s (using fallback LOLBIN data)", e)
+            # F-2 (round 11): catching without degrading is the round-8
+            # disease — production ran on the 9-entry fallback with
+            # zero degradations fired. The run record must learn.
+            from nabla.degradations import report_degradation
+            report_degradation("lolbin_index_not_loaded")
 
         for i, log_type in enumerate(types, 1):
             logger.info("Ingestion (%d/%d): generating %d %s logs", i, len(types), log_count, log_type)

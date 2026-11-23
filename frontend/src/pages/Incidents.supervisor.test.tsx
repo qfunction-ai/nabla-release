@@ -171,6 +171,21 @@ describe('SupervisorReportCard (Phase 3, R-1/FR-1/D-10)', () => {
     expect(screen.getByText(/No supervisor analysis was generated/)).toBeInTheDocument();
   });
 
+  it('capped (round 11 F-1): beyond-cap banner, never reads as a validation failure', async () => {
+    await openDetail({
+      ...baseIncident,
+      review_status: 'capped',
+      supervisor_report: undefined,
+      supervisor_report_meta: { invalid_elements: 0, parse_error: '', reason: 'finding beyond the per-run review cap — no report was requested for it' },
+    });
+    expect(screen.getByText('NOT REVIEWED — BEYOND CAP')).toBeInTheDocument();
+    expect(screen.getByText(/more findings than the per-run review cap/)).toBeInTheDocument();
+    // the capped banner must never carry validation-failure language
+    expect(screen.queryByText(/failed validation/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('REPORT INVALID')).not.toBeInTheDocument();
+    expect(screen.getByText(/authoritative summary/i)).toBeInTheDocument();
+  });
+
   it('legacy incidents (no review_status) render no supervisor section', async () => {
     mockIncidents(baseIncident);
     render(

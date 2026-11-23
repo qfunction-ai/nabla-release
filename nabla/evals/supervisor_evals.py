@@ -471,10 +471,20 @@ async def run_evals() -> SuiteResult:
     Returns:
         SuiteResult with pass/fail status for all scenarios.
     """
-    setup_blocks_for_eval()
-    suite = build_supervisor_suite()
-    result = await suite.run()
-    return result
+    # Round-11 eval lock: the eval resets the reviewer agent (T-1) while a
+    # pipeline run holds the same reviewer — concurrently they reset each
+    # other mid-review. The eval takes the SAME run guard the pipeline
+    # uses: refusal in both directions, never a race.
+    from nabla.pipeline.run_guard import acquire_run_guard
+
+    guard = acquire_run_guard()
+    try:
+        setup_blocks_for_eval()
+        suite = build_supervisor_suite()
+        result = await suite.run()
+        return result
+    finally:
+        guard.release()
 
 
 # ---------------------------------------------------------------------------

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from letta_client import Letta
@@ -23,6 +22,8 @@ class CorrelationResult:
     attack_lookup: dict = field(default_factory=dict)
     explanation_text: str = ""
     findings_count: int = 0
+    findings_shown: int = 0
+    shown_keys: list[tuple[str, str]] = field(default_factory=list)
 
 
 def run_correlation(
@@ -58,12 +59,23 @@ def run_correlation(
     blocks = _read_supervisor_blocks(client, agents["supervisor"], "attack_mapping")
     attack_mapping_text = blocks["attack_mapping"]
 
-    result.findings_text, result.timeline_text, result.findings, result.correlations, result.attack_lookup = _run_correlation(
+    result.findings_text, result.timeline_text, result.findings, result.correlations, result.attack_lookup, findings_shown = _run_correlation(
         entity_profiles=entity_profiles,
         anomalies=anomalies,
         graph_context_text=graph_context_text,
         attack_mapping_text=attack_mapping_text,
     )
+
+    # F-1 (round 11): the count is a VALUE from the correlation step —
+    # never regexed out of block text. findings_count is the TRUE count
+    # (what the run record reports); findings_shown is how many reached
+    # the review prompt; shown_keys identifies WHICH findings were shown
+    # so incidents beyond the cap can be marked "capped", not "invalid".
+    result.findings_count = len(result.findings)
+    result.findings_shown = len(findings_shown)
+    result.shown_keys = [
+        (f.get("entity", ""), f.get("type", "")) for f in findings_shown
+    ]
 
     # Generate explainability evidence + counterfactuals
     if result.findings:
@@ -103,10 +115,6 @@ def run_correlation(
         block_label="threat_findings",
         value=combined_text,
     )
-
-    # Extract findings count
-    fc_match = re.search(r"Confirmed threats:\s*(\d+)", result.findings_text)
-    result.findings_count = int(fc_match.group(1)) if fc_match else 0
 
     logger.info("Threat Correlation completed — %d findings", result.findings_count)
     return result

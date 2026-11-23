@@ -247,15 +247,15 @@ def build_lolbin_index(data: dict) -> dict:
 def format_lolbin_block(index: dict) -> str:
     """Format the LOLBIN index as compact text for the shared memory block.
 
-    Format:
+    Format (name | categories | mitre | detection, " | "-separated):
         === WINDOWS LOLBINS ===
-        certutil: Download,Encode,Decode | T1105,T1140,T1564.004 | Sigma:proc_creation_win_certutil_download
-        mshta: Execute | T1218
+        certutil.exe | Download,Encode,Decode | T1105,T1140 | Sigma:proc_creation_win_certutil_download
+        mshta.exe | Execute | T1218
         ...
 
         === UNIX GTFOBINS ===
-        bash: shell,file-read,file-write,download | T1059
-        curl: download,file-read,upload | T1105
+        bash | shell,file-read,file-write,download | T1059
+        curl | download,file-read,upload | T1105
         ...
 
     The block text is parsed by tools at runtime to enrich LOLBIN detections

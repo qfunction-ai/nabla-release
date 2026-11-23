@@ -593,7 +593,7 @@ class TestRunCorrelation:
                 "details": "Activity during off-hours",
             },
         ]
-        findings, timeline, _, _, _ = run_correlation(anomalies)
+        findings, timeline, _, _, _, _shown = run_correlation(anomalies)
         assert "Confirmed threats:" in findings
         assert len(timeline) > 50  # Should produce a narrative
 
@@ -626,7 +626,7 @@ class TestRunCorrelation:
             "brute_force_attempt:\n"
             "  T1110 | Brute Force | credential-access"
         )
-        findings, timeline, _, _, _ = run_correlation(anomalies, attack_mapping_text=attack_mapping)
+        findings, timeline, _, _, _, _shown = run_correlation(anomalies, attack_mapping_text=attack_mapping)
         assert "T1218" in findings or "T1110" in findings
 
     def test_with_graph_context(self):
@@ -670,7 +670,7 @@ class TestRunCorrelation:
             }],
         }
         graph_text = f"Context:\nJSON:{json.dumps(graph_data)}"
-        findings, timeline, _, _, _ = run_correlation(anomalies, graph_context_text=graph_text)
+        findings, timeline, _, _, _, _shown = run_correlation(anomalies, graph_context_text=graph_text)
         # Should have graph community and/or temporal chain enrichment
         assert "Community" in findings or "Chain" in findings or "Confirmed threats" in findings
 

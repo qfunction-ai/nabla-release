@@ -172,6 +172,7 @@ def save_incidents(
     findings: list[dict[str, Any]],
     supervisor_text: str = "",
     evidence_text: str = "",
+    shown_keys: list[tuple[str, str]] | None = None,
 ) -> int:
     """Create incidents from pipeline findings.
 
@@ -351,6 +352,7 @@ def save_incidents(
             touched,
             supervisor_text,
             findings_count=len(findings),
+            shown_keys=shown_keys,
         )
 
         _save_incidents(path, incidents)
