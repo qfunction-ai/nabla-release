@@ -321,6 +321,22 @@ export default function Entities() {
                             <span style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: 'var(--accent)' }}>
                               {a.detection_method}
                             </span>
+                            {/* L9: each anomaly's ATT&CK techniques were
+                                served but never rendered */}
+                            {a.mitre_attack && a.mitre_attack.length > 0 && (
+                              <span style={{ display: 'flex', gap: 4 }}>
+                                {a.mitre_attack.map((t) => (
+                                  <span
+                                    key={t.id}
+                                    className="tag"
+                                    title={t.name}
+                                    style={{ borderColor: 'var(--danger-border)', color: 'var(--danger)', fontSize: 9 }}
+                                  >
+                                    {t.id}
+                                  </span>
+                                ))}
+                              </span>
+                            )}
                             <span style={{ color: 'var(--text-tertiary)', fontSize: 11, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                               {a.details || '—'}
                             </span>

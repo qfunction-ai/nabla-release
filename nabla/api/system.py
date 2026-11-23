@@ -6,6 +6,7 @@ import tempfile
 
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 from nabla.auth import require_user
 from nabla.log import get_logger
@@ -116,35 +117,246 @@ async def health_check(_auth: None = Depends(require_user)):
 # RL State
 # ---------------------------------------------------------------------------
 
-@router.get("/rl")
+# ---------------------------------------------------------------------------
+# Response models (R-4 — the response model IS the contract)
+# ---------------------------------------------------------------------------
+
+class ThresholdState(BaseModel):
+    """One threshold with its honest calibration state (L6, mockup 03).
+
+    state:
+      calibratable    — a method with a comparable raw_score feeds it and
+                        label evidence has reached min_labels
+      held            — calibratable, but labels are still below
+                        min_labels; accumulating
+      not_calibratable — no method emits a score in this knob's units;
+                        tuning it would be theater
+    """
+
+    name: str
+    current: float
+    default: float
+    changed: bool = False
+    pinned: bool = False
+    state: str = "not_calibratable"
+    evidence: str | None = None
+    label_count: int = 0
+    tp_count: int = 0
+    fp_count: int = 0
+    min_labels: int = 30
+    methods: list[str] = []
+    reason: str | None = None
+
+
+class BanditState(BaseModel):
+    mean: float
+    alpha: float = 1.0
+    beta: float = 1.0
+
+
+class RLStateResponse(BaseModel):
+    thresholds: dict[str, ThresholdState]
+    effectiveness: dict[str, BanditState]
+    feedback_labels: int = 0
+    min_labels: int = 30
+
+
+class MethodReference(BaseModel):
+    """One detection method, served from the backend's own tables (L11).
+
+    The frontend's detectionMethods.ts was a stale third copy — 15
+    emitted methods had no entry, one row was a slash-triple. This
+    endpoint is the ground truth: every EMITTED method (not just the
+    27 bandit arms — attack_script, cusum, ewma, renamed_tool emit
+    without an arm), the anomaly type strings it actually emits, its
+    tunable knob (name + default) and its calibratable state. Authored
+    teaching prose stays in the frontend and joins by `method` key.
+    """
+
+    method: str
+    types: list[str] = []
+    threshold: str | None = None
+    default: float | None = None
+    calibratable: bool = False
+    state: str  # calibratable | not_calibratable | static
+    bandit_arm: bool = False
+
+
+class MethodsResponse(BaseModel):
+    methods: list[MethodReference]
+
+
+def _emitted_method_types() -> dict[str, list[str]]:
+    """method key -> the anomaly `type` strings its constructors emit.
+
+    Extracted from source at request time (cached per process) — the
+    same grep the R7 coverage gate uses, extended to pair each
+    detection_method with the `type` in the same dict literal. If a
+    detector renames its type string, this endpoint follows without a
+    manual copy.
+    """
+    import re
+    from pathlib import Path
+    from nabla import __file__ as _pkg
+
+    cached = getattr(_emitted_method_types, "_cache", None)
+    if cached is not None:
+        return cached
+
+    pairs: dict[str, set[str]] = {}
+    pkg = Path(_pkg).parent
+    for py in pkg.rglob("*.py"):
+        if "__pycache__" in str(py):
+            continue
+        lines = py.read_text().splitlines()
+        # track the most recent "type" literal; pair it with the next
+        # detection_method within the same dict literal. The wide window
+        # (25 lines) covers long literals — enumeration_behavior's
+        # type and detection_method sit 21 lines apart. The endpoint
+        # witness pins known pairs, so a mis-pairing fails loudly.
+        recent_type: str | None = None
+        recent_line: int = -100
+        for i, line in enumerate(lines):
+            m = re.search(r'"type":\s*"([a-z_]+)"', line)
+            if m:
+                recent_type, recent_line = m.group(1), i
+                continue
+            m = re.search(r'"detection_method":\s*"([a-z_]+)"', line)
+            if m and recent_type and i - recent_line <= 25:
+                pairs.setdefault(m.group(1), set()).add(recent_type)
+    out = {k: sorted(v) for k, v in pairs.items()}
+    _emitted_method_types._cache = out
+    return out
+
+
+@router.get("/methods", response_model=MethodsResponse)
+async def get_methods(_auth: None = Depends(require_user)):
+    """The method reference, generated from the backend's own tables
+    (L11): every emitted method + THRESHOLDS + the R7
+    classification. Kills the frontend's stale third copy — the
+    Methods page joins this list with its authored prose by method
+    key, and methods without prose render flagged, not silently
+    missing.
+    """
+    from nabla.rl.bandit import DETECTION_METHODS
+    from nabla.rl.calibration import (
+        THRESHOLDS,
+        METHOD_TO_THRESHOLD,
+        NOT_CALIBRATABLE_METHODS,
+        STATIC_DETECTORS,
+    )
+
+    types_by_method = _emitted_method_types()
+    # Every emitted method: the extraction pairs (pre_flagged's type is
+    # a passthrough, so it joins from the bandit list), plus any
+    # bandit arm the extraction missed.
+    all_methods = sorted(
+        set(types_by_method) | set(DETECTION_METHODS)
+    )
+    methods = []
+    for method in all_methods:
+        tname = METHOD_TO_THRESHOLD.get(method)
+        if tname:
+            state = "calibratable"
+            default = THRESHOLDS[tname][3]
+        elif method in NOT_CALIBRATABLE_METHODS:
+            state = "not_calibratable"
+            default = None
+        elif method in STATIC_DETECTORS:
+            state = "static"
+            default = None
+        else:
+            state = "unknown"
+            default = None
+        methods.append({
+            "method": method,
+            "types": types_by_method.get(method, []),
+            "threshold": tname,
+            "default": default,
+            "calibratable": state == "calibratable",
+            "state": state,
+            "bandit_arm": method in DETECTION_METHODS,
+        })
+    return {"methods": methods}
+
+
+@router.get("/rl", response_model=RLStateResponse)
 async def get_rl_state(_auth: None = Depends(require_user)):
     """Get threshold calibration state and detection method effectiveness.
 
     Phase 3: thresholds come from the calibration store (label-driven);
-    the bandit survives unchanged.
-
-    Returns:
-        Dict with current thresholds (current/default/pinned/evidence),
-        label counts, and bandit effectiveness.
+    the bandit survives unchanged. Frontend batch Phase 4 (L6): every
+    threshold carries its honest state (calibratable / held /
+    not_calibratable) and its live label evidence (counts + FP/TP
+    breakdown) — the held state and the not_calibratable tier knobs
+    were previously absent, so the Config page could not show what the
+    calibration loop was actually doing.
     """
     from nabla.config import get_settings
-    from nabla.rl.calibration import load_calibration, THRESHOLDS, current_labels
+    from nabla.rl.calibration import (
+        load_calibration,
+        THRESHOLDS,
+        current_labels,
+        METHOD_TO_THRESHOLD,
+        MIN_LABELS,
+    )
     from nabla.rl.bandit import DetectionMethodBandit
 
     settings = get_settings()
 
     store = load_calibration()
     bandit = DetectionMethodBandit.load(settings.rl_state_file)
+    labels = current_labels()
+
+    # Per-threshold label evidence (L6): which methods feed this knob and
+    # what the labeled alerts say. TP = true_positive + benign_true_positive.
+    methods_by_threshold: dict[str, list[str]] = {}
+    for method, tname in METHOD_TO_THRESHOLD.items():
+        methods_by_threshold.setdefault(tname, []).append(method)
+
+    label_counts: dict[str, dict[str, int]] = {}
+    for rec in labels:
+        tname = METHOD_TO_THRESHOLD.get(rec.get("detection_method", ""))
+        if not tname or rec.get("raw_score") is None:
+            continue
+        c = label_counts.setdefault(tname, {"labels": 0, "tp": 0, "fp": 0})
+        c["labels"] += 1
+        if rec.get("disposition") in ("true_positive", "benign_true_positive"):
+            c["tp"] += 1
+        elif rec.get("disposition") == "false_positive":
+            c["fp"] += 1
 
     thresholds = {}
     for name, (lo, hi, step, default) in THRESHOLDS.items():
         entry = store.get(name, {})
+        methods = methods_by_threshold.get(name, [])
+        counts = label_counts.get(name, {"labels": 0, "tp": 0, "fp": 0})
+        if not methods:
+            state = "not_calibratable"
+            reason = "no calibratable method feeds this threshold"
+        elif bool(entry.get("pinned")):
+            state = "calibratable"  # pinned is the operator guardrail, not a state
+            reason = None
+        elif counts["labels"] < MIN_LABELS:
+            state = "held"
+            reason = f"below min_labels ({counts['labels']}/{MIN_LABELS}); accumulating"
+        else:
+            state = "calibratable"
+            reason = None
         thresholds[name] = {
+            "name": name,
             "current": entry.get("current", default),
             "default": default,
             "changed": entry.get("current", default) != default,
             "pinned": bool(entry.get("pinned")),
+            "state": state,
             "evidence": entry.get("evidence"),
+            "label_count": counts["labels"],
+            "tp_count": counts["tp"],
+            "fp_count": counts["fp"],
+            "min_labels": MIN_LABELS,
+            "methods": sorted(methods),
+            "reason": reason,
         }
 
     means = bandit.get_means()
@@ -159,7 +371,8 @@ async def get_rl_state(_auth: None = Depends(require_user)):
     return {
         "thresholds": thresholds,
         "effectiveness": effectiveness,
-        "feedback_labels": len(current_labels()),
+        "feedback_labels": len(labels),
+        "min_labels": MIN_LABELS,
     }
 
 

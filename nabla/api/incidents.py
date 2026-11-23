@@ -25,7 +25,104 @@ class IncidentUpdateRequest(BaseModel):
     notes: str | None = None
 
 
-@router.get("")
+# ---------------------------------------------------------------------------
+# Response models (FR-4 pattern — the response model IS the contract;
+# openapi-typescript generates the frontend types from these)
+# ---------------------------------------------------------------------------
+
+class EvidenceRef(BaseModel):
+    """One resolved/unresolved evidence reference (D-10)."""
+
+    ref: str
+    resolved: bool = False
+    kind: str = "unknown"  # anomaly_id | event_id | entity_id | unknown
+    method: str | None = None
+    raw_score: float | None = None
+    threshold_in_effect: float | None = None
+
+
+class ReportClaim(BaseModel):
+    text: str = ""
+    evidence: list[EvidenceRef] = []
+
+
+class ReportTechnique(BaseModel):
+    id: str
+    known: bool = False
+
+
+class SupervisorReport(BaseModel):
+    """Structured per-incident supervisor report (Phase 3, R-1)."""
+
+    entity: str
+    summary: str
+    severity: str
+    entities: list[str] = []
+    attack_techniques: list[ReportTechnique] = []
+    recommended_actions: list[str] = []
+    claims: list[ReportClaim] = []
+
+
+class SupervisorReportMeta(BaseModel):
+    invalid_elements: int = 0
+    parse_error: str | None = None
+    reason: str | None = None
+
+
+class ContributingAnomalyDetail(BaseModel):
+    anomaly_id: str = ""
+    method: str = ""
+    raw_score: float | None = None
+    threshold_in_effect: float | None = None
+    event_ids: list[str] = []
+
+
+class MitreTechnique(BaseModel):
+    id: str = ""
+    name: str = ""
+    tactic: str = ""
+
+
+class IncidentResponse(BaseModel):
+    """One incident. Every field the record can carry is declared —
+    response models drop undeclared fields, so this IS the contract.
+    Old records (persisted before a field existed) validate via the
+    defaults; review_status absent on legacy records reads as None."""
+
+    incident_id: str
+    run_id: str
+    created_at: str = ""
+    updated_at: str = ""
+    status: str = "new"
+    severity: str = "medium"
+    entity: str = "unknown"
+    entity_type: str = "unknown"
+    finding_type: str = "unknown"
+    cross_type: str = "single-type"
+    log_types: list[str] = []
+    confidence: float = 0.5
+    mitre_attack: list[MitreTechnique] = []
+    tools_detected: list[str] | None = None
+    supervisor_review: str = ""
+    description: str = ""
+    evidence: str = ""  # JSON string (explain-layer output) — parsed client-side
+    contributing_anomaly_ids: list[str] = []
+    contributing_anomaly_details: list[ContributingAnomalyDetail] = []
+    operator_notes: str = ""
+    # Phase 3 (frontend batch): structured supervisor output
+    review_status: str | None = None  # ok | invalid | absent (None = legacy)
+    supervisor_report: SupervisorReport | None = None
+    supervisor_report_meta: SupervisorReportMeta | None = None
+
+
+class IncidentListResponse(BaseModel):
+    incidents: list[IncidentResponse]
+    total: int
+    limit: int = 50
+    offset: int = 0
+
+
+@router.get("", response_model=IncidentListResponse)
 async def list_incidents(
     status: Literal["new", "investigating", "resolved", "false_positive"] | None = None,
     disposition: Literal["true_positive", "benign_true_positive", "false_positive"] | None = None,
@@ -77,7 +174,7 @@ async def get_incident_stats(_auth: None = Depends(require_user)):
     return incident_stats()
 
 
-@router.get("/{incident_id}")
+@router.get("/{incident_id}", response_model=IncidentResponse)
 async def get_incident(
     incident_id: str,
     _auth: None = Depends(require_user),

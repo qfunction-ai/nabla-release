@@ -104,17 +104,14 @@ def run_supervisor(
             "not statistical deviation. Read the system_phase "
             "block for details on which methods are active/suppressed."
         )
-    prompt = (
-        f"The threat_findings block contains {findings_count} "
-        "confirmed threat(s). "
-        "Read the threat_findings block carefully. For each "
-        "finding: assess whether it is a true positive or false "
-        "positive, connect related findings into coherent attack "
-        "narratives, and generate a concise report. "
-        "Your report MUST acknowledge all confirmed findings — "
-        "do not claim there are no threats when the block lists "
-        f"confirmed threats.{phase_note}{digest_note}"
-    )
+    # Phase 3 (frontend batch, R-1): ONE call, structured output. FR-2
+    # settled the mechanism — the fork does not pass response_format
+    # through to Ollama, so this is prompt-only JSON with per-element
+    # validation downstream (parse_reports). The free-text path survives
+    # only as the parse-failure fallback.
+    from nabla.pipeline.structured_report import build_structured_prompt, parse_reports
+
+    prompt = build_structured_prompt(findings_count, phase_note, digest_note)
 
     supervisor_response = client.agents.messages.create(
         agent_id=agents["supervisor"],
@@ -124,6 +121,15 @@ def run_supervisor(
         }],
     )
     supervisor_text = _extract_assistant_message(supervisor_response)
+
+    # Order matters: parse FIRST. The contradiction patterns below match
+    # inside JSON summary strings too — prepending the header before the
+    # parse would mangle the array. When reports parse, the per-report
+    # safeguard (attach_structured_reports) owns contradiction handling
+    # and the raw text stays clean. When they don't, this raw-text
+    # safeguard guards the fallback the user will actually see.
+    _meta = parse_reports(supervisor_text)
+    _structured_ok = bool(_meta["reports"])
 
     # Post-processing: if the supervisor contradicts the findings count,
     # prepend a deterministic summary so the user always sees the truth.
@@ -137,7 +143,10 @@ def run_supervisor(
         r"clear of", r"(?<![a-z])no acute", r"(?<![a-z])no high-confidence correlated",
     ]
     _lower = supervisor_text.lower()
-    _contradicts = any(_re.search(p, _lower) for p in _no_threat_patterns)
+    _contradicts = (
+        not _structured_ok
+        and any(_re.search(p, _lower) for p in _no_threat_patterns)
+    )
     if _contradicts:
         logger.warning(
             "Supervisor contradicts findings count (%d): "

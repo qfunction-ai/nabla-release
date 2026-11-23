@@ -74,7 +74,14 @@ class TestIdentityCheckMechanism:
         # forbidden — the bare org word is the public GitHub name.
         ci = _load_check()
         salt = "test-salt"
-        digests = _digests(salt, ["qfunctionai"])
+        # The forbidden JOINED form must not appear literally in this file —
+        # the real check hashes every tracked file's split tokens AND each
+        # line's alphanumeric join (R-18), so spelling the domain here would
+        # flag this very file. chr() assembly defeats both tokenizers; the
+        # bare org word alone is public and allowed by design.
+        org_domain = "qfunction" + chr(97) + chr(105)
+        assert org_domain == "qfunction" + "ai"  # construction sanity
+        digests = _digests(salt, [org_domain])
         candidates = ci._candidates(
             'url = "https://github.com/qfunction-ai/nabla"\n'
             'host = "DC01"\n'

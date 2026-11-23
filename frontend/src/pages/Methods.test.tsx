@@ -4,9 +4,24 @@ import { MemoryRouter } from 'react-router-dom';
 import Methods from './Methods';
 import { DETECTION_METHODS, SUPPLEMENTARY } from '../lib/detectionMethods';
 
+vi.mock('../lib/api', () => ({
+  apiFetch: vi.fn(),
+}));
+
+const { apiFetch } = await import('../lib/api');
+
 vi.mock('../hooks/useAuth', () => ({
   useAuth: () => ({ isAuthenticated: true, username: 'test', role: 'admin', loading: false, refreshAuth: async () => {}, logout: vi.fn() }),
 }));
+
+// A representative slice of the real /api/system/methods response —
+// one prose-backed method (join by type string), one joined by method
+// key, one uncatalogued (no prose anywhere).
+const METHODS_SLICE = [
+  { method: 'multi_ip', types: ['multiple_source_ips'], threshold: 'multi_ip_count', default: 3, calibratable: true, state: 'calibratable', bandit_arm: true },
+  { method: 'off_hours', types: ['off_hours_activity'], threshold: 'off_hours_count', default: 3, calibratable: true, state: 'calibratable', bandit_arm: true },
+  { method: 'attack_script', types: ['attack_script_execution'], threshold: null, default: null, calibratable: false, state: 'static', bandit_arm: false },
+];
 
 function renderMethods() {
   return render(
@@ -59,14 +74,19 @@ describe('Methods data integrity', () => {
 describe('Methods page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    (apiFetch as ReturnType<typeof vi.fn>).mockResolvedValue({ methods: METHODS_SLICE });
   });
 
-  it('renders the title and all 29 cards', () => {
+  it('renders the generated list: every served method appears', async () => {
     renderMethods();
     expect(screen.getByText('METHODS')).toBeInTheDocument();
-    for (const m of DETECTION_METHODS) {
-      expect(screen.getByText(`#${m.number}`)).toBeInTheDocument();
-    }
+    // join by type string: multi_ip serves multiple_source_ips
+    expect(await screen.findByText('Impossible travel')).toBeInTheDocument();
+    // join by method key: off_hours prose entry carries typeLabel
+    // 'off_hours' (the method key), not the emitted type
+    expect(screen.getByText('Off-hours activity')).toBeInTheDocument();
+    // the count line reads from the served list
+    expect(screen.getByText(/3 \/ 3/)).toBeInTheDocument();
   });
 
   it('renders the supplementary layers', () => {
@@ -75,27 +95,31 @@ describe('Methods page', () => {
     expect(screen.getByText(/Temporal chains/i)).toBeInTheDocument();
   });
 
-  it('filters by category', () => {
+  it('uncatalogued methods render flagged, never silently missing', async () => {
     renderMethods();
-    const before = screen.getByText(/29 \/ 29/);
-    expect(before).toBeInTheDocument();
-    const catSelect = screen.getAllByDisplayValue('All categories')[0];
-    fireEvent.change(catSelect, { target: { value: 'entity' } });
-    expect(screen.getByText(/9 \/ 29/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/Emitted — No Reference Entry/i)
+    ).toBeInTheDocument();
+    expect(screen.getAllByText(/attack_script/).length).toBeGreaterThanOrEqual(1);
+    expect(
+      screen.getByText(/No authored reference entry for this method yet/i)
+    ).toBeInTheDocument();
   });
 
-  it('searches by name and type label', () => {
+  it('stale prose entries surface in their own section', async () => {
     renderMethods();
+    expect(await screen.findByText(/Stale Reference Entries/i)).toBeInTheDocument();
+    // the L11 slash-triple is the canonical stale entry
+    expect(
+      screen.getByText(/ewma_drift \/ cusum_shift \/ cusum_drop/)
+    ).toBeInTheDocument();
+  });
+
+  it('searches across method keys and type strings', async () => {
+    renderMethods();
+    await screen.findByText(/3 \/ 3/);
     const search = screen.getByPlaceholderText(/Search methods/);
-    fireEvent.change(search, { target: { value: 'brute_force' } });
-    expect(screen.getByText(/1 \/ 29/)).toBeInTheDocument();
-    expect(screen.getByText('Brute force')).toBeInTheDocument();
-  });
-
-  it('filters by baseline availability', () => {
-    renderMethods();
-    const select = screen.getAllByDisplayValue('Baseline: any')[0];
-    fireEvent.change(select, { target: { value: 'active' } });
-    expect(screen.getByText(/13 \/ 29/)).toBeInTheDocument();
+    fireEvent.change(search, { target: { value: 'multiple_source_ips' } });
+    expect(screen.getByText(/1 \/ 3/)).toBeInTheDocument();
   });
 });

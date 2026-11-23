@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { apiFetch } from '../lib/api';
 import EnvironmentEditor from '../components/EnvironmentEditor';
+import type { components } from '../types/api';
 
 interface ScheduleData {
   running: boolean;
@@ -15,12 +16,11 @@ interface ConnectorData {
   sumologic: { configured: boolean; last_ingestion: Record<string, string> };
 }
 
-interface RLData {
-  thresholds: Record<string, { current: number; default: number; changed: boolean; updates: number }>;
-  effectiveness: Record<string, { mean: number; alpha: number; beta: number; observations: number }>;
-  total_threshold_updates: number;
-  total_bandit_observations: number;
-}
+// Generated from the Pydantic response model (FR-4). The hand-copied
+// interface this replaces served four phantom fields (updates,
+// observations, total_threshold_updates, total_bandit_observations)
+// that the backend never sent — the columns rendered empty forever.
+type RLData = components['schemas']['RLStateResponse'];
 
 interface HealthData {
   letta: { healthy: boolean; detail?: string };
@@ -294,38 +294,66 @@ export default function ConfigPage() {
         <div>
           <div className="grid-2" style={{ marginBottom: 24 }}>
             <div className="card">
-              <div className="section-title" data-symbol="∇">THRESHOLD UPDATES</div>
-              <div className="card-value accent">{rl.total_threshold_updates}</div>
+              <div className="section-title" data-symbol="∇">FEEDBACK LABELS</div>
+              <div className="card-value accent">{rl.feedback_labels}</div>
             </div>
             <div className="card">
-              <div className="section-title" data-symbol="∂">BANDIT OBSERVATIONS</div>
-              <div className="card-value accent">{rl.total_bandit_observations}</div>
+              <div className="section-title" data-symbol="∂">MIN LABELS / METHOD</div>
+              <div className="card-value accent">{rl.min_labels}</div>
             </div>
           </div>
 
           <div className="section">
-            <div className="section-title" data-symbol="∇">ADAPTIVE THRESHOLDS</div>
+            <div className="section-title" data-symbol="∇">ADAPTIVE THRESHOLDS — HONEST STATES</div>
             <div className="table-container">
               <table>
                 <thead>
                   <tr>
-                    <th>Threshold</th>
+                    <th>Method</th>
                     <th>Current</th>
                     <th>Default</th>
-                    <th>Updates</th>
+                    <th>State</th>
+                    <th>Evidence</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {Object.entries(rl.thresholds).map(([name, t]) => (
-                    <tr key={name}>
-                      <td style={{ color: t.changed ? 'var(--accent)' : 'inherit' }}>{name}</td>
-                      <td>{t.current.toFixed(3)}</td>
-                      <td style={{ color: 'var(--text-tertiary)' }}>{t.default.toFixed(3)}</td>
-                      <td>{t.updates}</td>
-                    </tr>
-                  ))}
+                  {Object.entries(rl.thresholds).map(([name, t]) => {
+                    const stateTag = t.pinned ? (
+                      <span className="tag" style={{ borderColor: 'var(--warning-border)', color: 'var(--warning)' }}>PINNED</span>
+                    ) : t.state === 'held' ? (
+                      <span className="tag" style={{ borderColor: 'var(--info-border, var(--accent))', color: 'var(--info, var(--accent))' }}>HELD — {t.label_count}/{t.min_labels} LABELS</span>
+                    ) : t.state === 'not_calibratable' ? (
+                      <span className="tag">NOT CALIBRATABLE</span>
+                    ) : t.changed ? (
+                      <span className="tag" style={{ borderColor: 'var(--accent-border, var(--accent))', color: 'var(--accent)' }}>MOVED {t.default} → {t.current}</span>
+                    ) : (
+                      <span className="tag" style={{ borderColor: 'var(--success-border, var(--success))', color: 'var(--success)' }}>CALIBRATABLE</span>
+                    );
+                    const evidence = t.pinned
+                      ? 'operator guardrail — never tuned'
+                      : t.state === 'held' && t.reason
+                        ? t.reason
+                      : t.label_count > 0
+                        ? `${t.label_count} labels · ${t.fp_count} FP / ${t.tp_count} TP`
+                        : t.reason || 'no labels yet';
+                    return (
+                      <tr key={name}>
+                        <td className="mono" style={{ color: t.changed ? 'var(--accent)' : 'inherit' }} title={t.methods.length > 0 ? `fed by: ${t.methods.join(', ')}` : ''}>{name}</td>
+                        <td className="mono" style={{ color: t.changed ? 'var(--accent)' : 'inherit' }}>{t.current}</td>
+                        <td className="mono" style={{ color: 'var(--text-tertiary)' }}>{t.default}</td>
+                        <td>{stateTag}</td>
+                        <td className="mono" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{evidence}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-tertiary)', marginTop: 6 }}>
+              The four states: <b style={{ color: 'var(--accent)' }}>MOVED</b> — calibration changed it from the default, label evidence shown.{' '}
+              <b style={{ color: 'var(--warning)' }}>PINNED</b> — guardrailed by policy, never auto-tuned.{' '}
+              <b>HELD</b> — calibratable but label evidence is still below min_labels.{' '}
+              <b>NOT CALIBRATABLE</b> — no method emits a score in this knob's units; tuning it would be theater.
             </div>
           </div>
 
@@ -358,7 +386,7 @@ export default function ConfigPage() {
                         </td>
                         <td>{e.alpha.toFixed(0)}</td>
                         <td>{e.beta.toFixed(0)}</td>
-                        <td>{e.observations}</td>
+                        <td>{e.alpha + e.beta - 2}</td>
                       </tr>
                     ))}
                 </tbody>
@@ -439,7 +467,7 @@ export default function ConfigPage() {
           <div className="section">
             <div className="section-title" data-symbol="∇">EXPORT STATE</div>
             <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginBottom: 12 }}>
-              Download all learned state (entity profiles, RL thresholds, GCN-LOF model, environment context, watchlists, incidents, run history).
+              Download all learned state (entity profiles, RL thresholds, GCN-LOF model, environment context, incidents, run history).
             </p>
             <button className="btn btn-primary" onClick={doExport}>
               Export JSON

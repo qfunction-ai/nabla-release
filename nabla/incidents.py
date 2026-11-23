@@ -198,6 +198,9 @@ def save_incidents(
     now = datetime.now(timezone.utc).isoformat()
     new_count = 0
     run_anomalies = _load_run_anomalies(run_id)
+    # Phase 3 (frontend batch): incidents touched THIS run — new +
+    # deduped-updated — get the structured supervisor report attached.
+    touched: list[dict[str, Any]] = []
 
     with file_lock(path):
         incidents = _load_incidents(path)
@@ -252,6 +255,7 @@ def save_incidents(
                         existing["evidence"] = joined
                 if not existing.get("description"):
                     existing["description"] = _build_finding_description(finding)
+                touched.append(existing)
                 continue
 
             # New incident
@@ -312,6 +316,10 @@ def save_incidents(
                         "method": a.get("detection_method", a.get("type", "")),
                         "raw_score": a.get("raw_score"),
                         "threshold_in_effect": _threshold_in_effect_for(a),
+                        # Phase 3: event_ids (N7) — the D-10 resolver
+                        # resolves evidence refs of kind event_id against
+                        # these; capped to bound the record size.
+                        "event_ids": (a.get("event_ids") or [])[:10],
                     }
                     for a in (run_anomalies or [])
                     if a.get("entity", a.get("user")) == entity
@@ -320,7 +328,20 @@ def save_incidents(
             }
             incidents.append(incident)
             active_keys[key] = incident
+            touched.append(incident)
             new_count += 1
+
+        # Phase 3 (frontend batch, R-1/FR-1): parse the supervisor output
+        # per element and attach a resolved structured report per touched
+        # incident. One malformed report never invalidates its neighbors;
+        # each incident gets its own review_status (ok/invalid/absent).
+        from nabla.pipeline.structured_report import attach_structured_reports
+
+        attach_structured_reports(
+            touched,
+            supervisor_text,
+            findings_count=len(findings),
+        )
 
         _save_incidents(path, incidents)
 

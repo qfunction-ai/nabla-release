@@ -730,7 +730,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentListResponse"
+                }
               }
             }
           },
@@ -791,7 +793,9 @@
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/IncidentResponse"
+                }
               }
             }
           },
@@ -841,6 +845,66 @@
             "content": {
               "application/json": {
                 "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/chat/history": {
+      "get": {
+        "tags": [
+          "chat"
+        ],
+        "summary": "Chat History",
+        "description": "The authenticated user's transcript (B1/R-3).\n\nNabla-owned store, never Letta's message list \u2014 the supervisor is\nshared with the pipeline, so a Letta-history endpoint would leak\nother users' chats and the pipeline's review prompts. Reasoning is\nreturned only to the owning user (the store is scoped by identity).",
+        "operationId": "chat_history_api_chat_history_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 200,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatHistoryResponse"
+                }
               }
             }
           },
@@ -1150,20 +1214,44 @@
         }
       }
     },
+    "/api/system/methods": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Get Methods",
+        "description": "The method reference, generated from the backend's own tables\n(L11): every emitted method + THRESHOLDS + the R7\nclassification. Kills the frontend's stale third copy \u2014 the\nMethods page joins this list with its authored prose by method\nkey, and methods without prose render flagged, not silently\nmissing.",
+        "operationId": "get_methods_api_system_methods_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MethodsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/system/rl": {
       "get": {
         "tags": [
           "system"
         ],
         "summary": "Get Rl State",
-        "description": "Get threshold calibration state and detection method effectiveness.\n\nPhase 3: thresholds come from the calibration store (label-driven);\nthe bandit survives unchanged.\n\nReturns:\n    Dict with current thresholds (current/default/pinned/evidence),\n    label counts, and bandit effectiveness.",
+        "description": "Get threshold calibration state and detection method effectiveness.\n\nPhase 3: thresholds come from the calibration store (label-driven);\nthe bandit survives unchanged. Frontend batch Phase 4 (L6): every\nthreshold carries its honest state (calibratable / held /\nnot_calibratable) and its live label evidence (counts + FP/TP\nbreakdown) \u2014 the held state and the not_calibratable tier knobs\nwere previously absent, so the Config page could not show what the\ncalibration loop was actually doing.",
         "operationId": "get_rl_state_api_system_rl_get",
         "responses": {
           "200": {
             "description": "Successful Response",
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/RLStateResponse"
+                }
               }
             }
           }
@@ -1409,6 +1497,29 @@
   },
   "components": {
     "schemas": {
+      "BanditState": {
+        "properties": {
+          "mean": {
+            "type": "number",
+            "title": "Mean"
+          },
+          "alpha": {
+            "type": "number",
+            "title": "Alpha",
+            "default": 1.0
+          },
+          "beta": {
+            "type": "number",
+            "title": "Beta",
+            "default": 1.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "mean"
+        ],
+        "title": "BanditState"
+      },
       "Body_import_state_api_system_import_post": {
         "properties": {
           "file": {
@@ -1437,6 +1548,33 @@
         ],
         "title": "Body_upload_file_api_upload_post"
       },
+      "ChatHistoryResponse": {
+        "properties": {
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/ChatTurn"
+            },
+            "type": "array",
+            "title": "Turns"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor"
+          }
+        },
+        "type": "object",
+        "required": [
+          "turns"
+        ],
+        "title": "ChatHistoryResponse"
+      },
       "ChatRequest": {
         "properties": {
           "message": {
@@ -1455,6 +1593,92 @@
         ],
         "title": "ChatRequest",
         "description": "Request body for a chat message.\n\nAttributes:\n    message: The user's message to the supervisor.\n    include_reasoning: Whether to include reasoning in the response."
+      },
+      "ChatTurn": {
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "title": "Turn Id"
+          },
+          "ts": {
+            "type": "string",
+            "title": "Ts"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          },
+          "answer": {
+            "type": "string",
+            "title": "Answer"
+          },
+          "reasoning": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reasoning"
+          }
+        },
+        "type": "object",
+        "required": [
+          "turn_id",
+          "ts",
+          "message",
+          "answer"
+        ],
+        "title": "ChatTurn",
+        "description": "One persisted conversation turn (B1 \u2014 the response model IS the\ncontract)."
+      },
+      "ContributingAnomalyDetail": {
+        "properties": {
+          "anomaly_id": {
+            "type": "string",
+            "title": "Anomaly Id",
+            "default": ""
+          },
+          "method": {
+            "type": "string",
+            "title": "Method",
+            "default": ""
+          },
+          "raw_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Score"
+          },
+          "threshold_in_effect": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold In Effect"
+          },
+          "event_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Event Ids",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ContributingAnomalyDetail"
       },
       "EntityListResponse": {
         "properties": {
@@ -1628,6 +1852,63 @@
         "title": "EnvironmentUpdate",
         "description": "Environment context update.\n\nAttributes:\n    environment: List of free-form environment facts.\n    entities: Dict of entity_name \u2192 list of facts.\n    network_ranges: List of CIDR network ranges.\n    new_accounts: List of new account names.\n    service_accounts: List of service account names.\n    admin_accounts: List of admin account names.\n    benign_patterns: List of benign pattern descriptions."
       },
+      "EvidenceRef": {
+        "properties": {
+          "ref": {
+            "type": "string",
+            "title": "Ref"
+          },
+          "resolved": {
+            "type": "boolean",
+            "title": "Resolved",
+            "default": false
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind",
+            "default": "unknown"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Method"
+          },
+          "raw_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Raw Score"
+          },
+          "threshold_in_effect": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold In Effect"
+          }
+        },
+        "type": "object",
+        "required": [
+          "ref"
+        ],
+        "title": "EvidenceRef",
+        "description": "One resolved/unresolved evidence reference (D-10)."
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1640,6 +1921,198 @@
         },
         "type": "object",
         "title": "HTTPValidationError"
+      },
+      "IncidentListResponse": {
+        "properties": {
+          "incidents": {
+            "items": {
+              "$ref": "#/components/schemas/IncidentResponse"
+            },
+            "type": "array",
+            "title": "Incidents"
+          },
+          "total": {
+            "type": "integer",
+            "title": "Total"
+          },
+          "limit": {
+            "type": "integer",
+            "title": "Limit",
+            "default": 50
+          },
+          "offset": {
+            "type": "integer",
+            "title": "Offset",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "incidents",
+          "total"
+        ],
+        "title": "IncidentListResponse"
+      },
+      "IncidentResponse": {
+        "properties": {
+          "incident_id": {
+            "type": "string",
+            "title": "Incident Id"
+          },
+          "run_id": {
+            "type": "string",
+            "title": "Run Id"
+          },
+          "created_at": {
+            "type": "string",
+            "title": "Created At",
+            "default": ""
+          },
+          "updated_at": {
+            "type": "string",
+            "title": "Updated At",
+            "default": ""
+          },
+          "status": {
+            "type": "string",
+            "title": "Status",
+            "default": "new"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity",
+            "default": "medium"
+          },
+          "entity": {
+            "type": "string",
+            "title": "Entity",
+            "default": "unknown"
+          },
+          "entity_type": {
+            "type": "string",
+            "title": "Entity Type",
+            "default": "unknown"
+          },
+          "finding_type": {
+            "type": "string",
+            "title": "Finding Type",
+            "default": "unknown"
+          },
+          "cross_type": {
+            "type": "string",
+            "title": "Cross Type",
+            "default": "single-type"
+          },
+          "log_types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Log Types",
+            "default": []
+          },
+          "confidence": {
+            "type": "number",
+            "title": "Confidence",
+            "default": 0.5
+          },
+          "mitre_attack": {
+            "items": {
+              "$ref": "#/components/schemas/MitreTechnique"
+            },
+            "type": "array",
+            "title": "Mitre Attack",
+            "default": []
+          },
+          "tools_detected": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tools Detected"
+          },
+          "supervisor_review": {
+            "type": "string",
+            "title": "Supervisor Review",
+            "default": ""
+          },
+          "description": {
+            "type": "string",
+            "title": "Description",
+            "default": ""
+          },
+          "evidence": {
+            "type": "string",
+            "title": "Evidence",
+            "default": ""
+          },
+          "contributing_anomaly_ids": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Contributing Anomaly Ids",
+            "default": []
+          },
+          "contributing_anomaly_details": {
+            "items": {
+              "$ref": "#/components/schemas/ContributingAnomalyDetail"
+            },
+            "type": "array",
+            "title": "Contributing Anomaly Details",
+            "default": []
+          },
+          "operator_notes": {
+            "type": "string",
+            "title": "Operator Notes",
+            "default": ""
+          },
+          "review_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Review Status"
+          },
+          "supervisor_report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SupervisorReport"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "supervisor_report_meta": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SupervisorReportMeta"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "incident_id",
+          "run_id"
+        ],
+        "title": "IncidentResponse",
+        "description": "One incident. Every field the record can carry is declared \u2014\nresponse models drop undeclared fields, so this IS the contract.\nOld records (persisted before a field existed) validate via the\ndefaults; review_status absent on legacy records reads as None."
       },
       "IncidentUpdateRequest": {
         "properties": {
@@ -1691,6 +2164,102 @@
         "type": "object",
         "title": "IncidentUpdateRequest",
         "description": "Request body for updating an incident.\n\nAttributes:\n    status: New status \u2014 new, investigating, resolved, false_positive.\n    notes: Operator notes to append."
+      },
+      "MethodReference": {
+        "properties": {
+          "method": {
+            "type": "string",
+            "title": "Method"
+          },
+          "types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Types",
+            "default": []
+          },
+          "threshold": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Threshold"
+          },
+          "default": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default"
+          },
+          "calibratable": {
+            "type": "boolean",
+            "title": "Calibratable",
+            "default": false
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "bandit_arm": {
+            "type": "boolean",
+            "title": "Bandit Arm",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "method",
+          "state"
+        ],
+        "title": "MethodReference",
+        "description": "One detection method, served from the backend's own tables (L11).\n\nThe frontend's detectionMethods.ts was a stale third copy \u2014 15\nemitted methods had no entry, one row was a slash-triple. This\nendpoint is the ground truth: every EMITTED method (not just the\n27 bandit arms \u2014 attack_script, cusum, ewma, renamed_tool emit\nwithout an arm), the anomaly type strings it actually emits, its\ntunable knob (name + default) and its calibratable state. Authored\nteaching prose stays in the frontend and joins by `method` key."
+      },
+      "MethodsResponse": {
+        "properties": {
+          "methods": {
+            "items": {
+              "$ref": "#/components/schemas/MethodReference"
+            },
+            "type": "array",
+            "title": "Methods"
+          }
+        },
+        "type": "object",
+        "required": [
+          "methods"
+        ],
+        "title": "MethodsResponse"
+      },
+      "MitreTechnique": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id",
+            "default": ""
+          },
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "default": ""
+          },
+          "tactic": {
+            "type": "string",
+            "title": "Tactic",
+            "default": ""
+          }
+        },
+        "type": "object",
+        "title": "MitreTechnique"
       },
       "PipelineRunRequest": {
         "properties": {
@@ -1894,6 +2463,77 @@
         ],
         "title": "QuarantineState",
         "description": "The entity's baseline-hold state (N3/N5) as the UI shows it.\ndays_left is data-clock days; None when not currently held."
+      },
+      "RLStateResponse": {
+        "properties": {
+          "thresholds": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ThresholdState"
+            },
+            "type": "object",
+            "title": "Thresholds"
+          },
+          "effectiveness": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/BanditState"
+            },
+            "type": "object",
+            "title": "Effectiveness"
+          },
+          "feedback_labels": {
+            "type": "integer",
+            "title": "Feedback Labels",
+            "default": 0
+          },
+          "min_labels": {
+            "type": "integer",
+            "title": "Min Labels",
+            "default": 30
+          }
+        },
+        "type": "object",
+        "required": [
+          "thresholds",
+          "effectiveness"
+        ],
+        "title": "RLStateResponse"
+      },
+      "ReportClaim": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "default": ""
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceRef"
+            },
+            "type": "array",
+            "title": "Evidence",
+            "default": []
+          }
+        },
+        "type": "object",
+        "title": "ReportClaim"
+      },
+      "ReportTechnique": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "known": {
+            "type": "boolean",
+            "title": "Known",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "id"
+        ],
+        "title": "ReportTechnique"
       },
       "RunAnomalySummary": {
         "properties": {
@@ -2323,6 +2963,184 @@
         "type": "object",
         "title": "ScheduleUpdate",
         "description": "Schedule configuration update.\n\nAttributes:\n    enabled: Start or stop the scheduler.\n    interval: Interval in minutes between pipeline runs.\n    log_types: Comma-separated log types.\n    log_count: Number of log entries per type."
+      },
+      "SupervisorReport": {
+        "properties": {
+          "entity": {
+            "type": "string",
+            "title": "Entity"
+          },
+          "summary": {
+            "type": "string",
+            "title": "Summary"
+          },
+          "severity": {
+            "type": "string",
+            "title": "Severity"
+          },
+          "entities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Entities",
+            "default": []
+          },
+          "attack_techniques": {
+            "items": {
+              "$ref": "#/components/schemas/ReportTechnique"
+            },
+            "type": "array",
+            "title": "Attack Techniques",
+            "default": []
+          },
+          "recommended_actions": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Recommended Actions",
+            "default": []
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/ReportClaim"
+            },
+            "type": "array",
+            "title": "Claims",
+            "default": []
+          }
+        },
+        "type": "object",
+        "required": [
+          "entity",
+          "summary",
+          "severity"
+        ],
+        "title": "SupervisorReport",
+        "description": "Structured per-incident supervisor report (Phase 3, R-1)."
+      },
+      "SupervisorReportMeta": {
+        "properties": {
+          "invalid_elements": {
+            "type": "integer",
+            "title": "Invalid Elements",
+            "default": 0
+          },
+          "parse_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parse Error"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "title": "SupervisorReportMeta"
+      },
+      "ThresholdState": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "current": {
+            "type": "number",
+            "title": "Current"
+          },
+          "default": {
+            "type": "number",
+            "title": "Default"
+          },
+          "changed": {
+            "type": "boolean",
+            "title": "Changed",
+            "default": false
+          },
+          "pinned": {
+            "type": "boolean",
+            "title": "Pinned",
+            "default": false
+          },
+          "state": {
+            "type": "string",
+            "title": "State",
+            "default": "not_calibratable"
+          },
+          "evidence": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence"
+          },
+          "label_count": {
+            "type": "integer",
+            "title": "Label Count",
+            "default": 0
+          },
+          "tp_count": {
+            "type": "integer",
+            "title": "Tp Count",
+            "default": 0
+          },
+          "fp_count": {
+            "type": "integer",
+            "title": "Fp Count",
+            "default": 0
+          },
+          "min_labels": {
+            "type": "integer",
+            "title": "Min Labels",
+            "default": 30
+          },
+          "methods": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Methods",
+            "default": []
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "current",
+          "default"
+        ],
+        "title": "ThresholdState",
+        "description": "One threshold with its honest calibration state (L6, mockup 03).\n\nstate:\n  calibratable    \u2014 a method with a comparable raw_score feeds it and\n                    label evidence has reached min_labels\n  held            \u2014 calibratable, but labels are still below\n                    min_labels; accumulating\n  not_calibratable \u2014 no method emits a score in this knob's units;\n                    tuning it would be theater"
       },
       "TimelineEvent": {
         "properties": {

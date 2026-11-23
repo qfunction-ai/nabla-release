@@ -253,6 +253,47 @@ def build_attack_index(stix_path: str) -> dict[str, list[dict]]:
     return index
 
 
+_TECHNIQUE_IDS_CACHE: set[str] | None = None
+
+
+def get_attack_technique_ids() -> set[str]:
+    """ALL technique IDs (e.g. T1059) in the pinned bundle.
+
+    One source, not a second copy (the L11 lesson): derived from the
+    same STIX bundle behind the attack_mapping block, cached per
+    process. The D-10 resolver uses this to flag unknown IDs the
+    supervisor cites — flagged, never silently dropped.
+
+    Deliberately the FULL bundle set, not the 18 IDs the
+    ANOMALY_TO_TECHNIQUES mapping references: detectors cite techniques
+    from their own signature lists (e.g. certutil carries T1105/T1140
+    while lolbin_abuse maps to T1218/T1202), so the narrow set flagged
+    real techniques as unknown (found live in the Phase 3 smoke).
+    """
+    global _TECHNIQUE_IDS_CACHE
+    if _TECHNIQUE_IDS_CACHE is not None:
+        return _TECHNIQUE_IDS_CACHE
+    from nabla.config import get_settings
+
+    data_dir = get_settings().data_dir
+    stix_path = os.path.join(data_dir, "enterprise-attack.json")
+    if not os.path.exists(stix_path):
+        stix_path = download_attack_bundle(data_dir)
+    from mitreattack.stix20 import MitreAttackData
+
+    attack_data = MitreAttackData(stix_filepath=stix_path)
+    ids: set[str] = set()
+    for t in attack_data.get_techniques(remove_revoked_deprecated=True):
+        for ref in t.get("external_references", []):
+            if ref.get("source_name") == "mitre-attack":
+                ext = ref.get("external_id")
+                if ext:
+                    ids.add(str(ext).upper())
+                break
+    _TECHNIQUE_IDS_CACHE = ids
+    return ids
+
+
 def format_attack_block(index: dict[str, list[dict]]) -> str:
     """Format the attack index as compact text for the shared memory block.
 

@@ -451,6 +451,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/chat/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Chat History
+         * @description The authenticated user's transcript (B1/R-3).
+         *
+         *     Nabla-owned store, never Letta's message list — the supervisor is
+         *     shared with the pipeline, so a Letta-history endpoint would leak
+         *     other users' chats and the pipeline's review prompts. Reasoning is
+         *     returned only to the owning user (the store is scoped by identity).
+         */
+        get: operations["chat_history_api_chat_history_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/chat/stream": {
         parameters: {
             query?: never;
@@ -651,6 +676,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/system/methods": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Methods
+         * @description The method reference, generated from the backend's own tables
+         *     (L11): every emitted method + THRESHOLDS + the R7
+         *     classification. Kills the frontend's stale third copy — the
+         *     Methods page joins this list with its authored prose by method
+         *     key, and methods without prose render flagged, not silently
+         *     missing.
+         */
+        get: operations["get_methods_api_system_methods_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/system/rl": {
         parameters: {
             query?: never;
@@ -663,11 +713,12 @@ export interface paths {
          * @description Get threshold calibration state and detection method effectiveness.
          *
          *     Phase 3: thresholds come from the calibration store (label-driven);
-         *     the bandit survives unchanged.
-         *
-         *     Returns:
-         *         Dict with current thresholds (current/default/pinned/evidence),
-         *         label counts, and bandit effectiveness.
+         *     the bandit survives unchanged. Frontend batch Phase 4 (L6): every
+         *     threshold carries its honest state (calibratable / held /
+         *     not_calibratable) and its live label evidence (counts + FP/TP
+         *     breakdown) — the held state and the not_calibratable tier knobs
+         *     were previously absent, so the Config page could not show what the
+         *     calibration loop was actually doing.
          */
         get: operations["get_rl_state_api_system_rl_get"];
         put?: never;
@@ -806,6 +857,21 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** BanditState */
+        BanditState: {
+            /** Mean */
+            mean: number;
+            /**
+             * Alpha
+             * @default 1
+             */
+            alpha: number;
+            /**
+             * Beta
+             * @default 1
+             */
+            beta: number;
+        };
         /** Body_import_state_api_system_import_post */
         Body_import_state_api_system_import_post: {
             /**
@@ -821,6 +887,13 @@ export interface components {
              * Format: binary
              */
             file: string;
+        };
+        /** ChatHistoryResponse */
+        ChatHistoryResponse: {
+            /** Turns */
+            turns: components["schemas"]["ChatTurn"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /**
          * ChatRequest
@@ -838,6 +911,45 @@ export interface components {
              * @default false
              */
             include_reasoning: boolean;
+        };
+        /**
+         * ChatTurn
+         * @description One persisted conversation turn (B1 — the response model IS the
+         *     contract).
+         */
+        ChatTurn: {
+            /** Turn Id */
+            turn_id: string;
+            /** Ts */
+            ts: string;
+            /** Message */
+            message: string;
+            /** Answer */
+            answer: string;
+            /** Reasoning */
+            reasoning?: string | null;
+        };
+        /** ContributingAnomalyDetail */
+        ContributingAnomalyDetail: {
+            /**
+             * Anomaly Id
+             * @default
+             */
+            anomaly_id: string;
+            /**
+             * Method
+             * @default
+             */
+            method: string;
+            /** Raw Score */
+            raw_score?: number | null;
+            /** Threshold In Effect */
+            threshold_in_effect?: number | null;
+            /**
+             * Event Ids
+             * @default []
+             */
+            event_ids: string[];
         };
         /** EntityListResponse */
         EntityListResponse: {
@@ -920,10 +1032,155 @@ export interface components {
             /** Benign Patterns */
             benign_patterns?: string[];
         };
+        /**
+         * EvidenceRef
+         * @description One resolved/unresolved evidence reference (D-10).
+         */
+        EvidenceRef: {
+            /** Ref */
+            ref: string;
+            /**
+             * Resolved
+             * @default false
+             */
+            resolved: boolean;
+            /**
+             * Kind
+             * @default unknown
+             */
+            kind: string;
+            /** Method */
+            method?: string | null;
+            /** Raw Score */
+            raw_score?: number | null;
+            /** Threshold In Effect */
+            threshold_in_effect?: number | null;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /** IncidentListResponse */
+        IncidentListResponse: {
+            /** Incidents */
+            incidents: components["schemas"]["IncidentResponse"][];
+            /** Total */
+            total: number;
+            /**
+             * Limit
+             * @default 50
+             */
+            limit: number;
+            /**
+             * Offset
+             * @default 0
+             */
+            offset: number;
+        };
+        /**
+         * IncidentResponse
+         * @description One incident. Every field the record can carry is declared —
+         *     response models drop undeclared fields, so this IS the contract.
+         *     Old records (persisted before a field existed) validate via the
+         *     defaults; review_status absent on legacy records reads as None.
+         */
+        IncidentResponse: {
+            /** Incident Id */
+            incident_id: string;
+            /** Run Id */
+            run_id: string;
+            /**
+             * Created At
+             * @default
+             */
+            created_at: string;
+            /**
+             * Updated At
+             * @default
+             */
+            updated_at: string;
+            /**
+             * Status
+             * @default new
+             */
+            status: string;
+            /**
+             * Severity
+             * @default medium
+             */
+            severity: string;
+            /**
+             * Entity
+             * @default unknown
+             */
+            entity: string;
+            /**
+             * Entity Type
+             * @default unknown
+             */
+            entity_type: string;
+            /**
+             * Finding Type
+             * @default unknown
+             */
+            finding_type: string;
+            /**
+             * Cross Type
+             * @default single-type
+             */
+            cross_type: string;
+            /**
+             * Log Types
+             * @default []
+             */
+            log_types: string[];
+            /**
+             * Confidence
+             * @default 0.5
+             */
+            confidence: number;
+            /**
+             * Mitre Attack
+             * @default []
+             */
+            mitre_attack: components["schemas"]["MitreTechnique"][];
+            /** Tools Detected */
+            tools_detected?: string[] | null;
+            /**
+             * Supervisor Review
+             * @default
+             */
+            supervisor_review: string;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /**
+             * Evidence
+             * @default
+             */
+            evidence: string;
+            /**
+             * Contributing Anomaly Ids
+             * @default []
+             */
+            contributing_anomaly_ids: string[];
+            /**
+             * Contributing Anomaly Details
+             * @default []
+             */
+            contributing_anomaly_details: components["schemas"]["ContributingAnomalyDetail"][];
+            /**
+             * Operator Notes
+             * @default
+             */
+            operator_notes: string;
+            /** Review Status */
+            review_status?: string | null;
+            supervisor_report?: components["schemas"]["SupervisorReport"] | null;
+            supervisor_report_meta?: components["schemas"]["SupervisorReportMeta"] | null;
         };
         /**
          * IncidentUpdateRequest
@@ -940,6 +1197,66 @@ export interface components {
             disposition?: ("true_positive" | "benign_true_positive" | "false_positive") | null;
             /** Notes */
             notes?: string | null;
+        };
+        /**
+         * MethodReference
+         * @description One detection method, served from the backend's own tables (L11).
+         *
+         *     The frontend's detectionMethods.ts was a stale third copy — 15
+         *     emitted methods had no entry, one row was a slash-triple. This
+         *     endpoint is the ground truth: every EMITTED method (not just the
+         *     27 bandit arms — attack_script, cusum, ewma, renamed_tool emit
+         *     without an arm), the anomaly type strings it actually emits, its
+         *     tunable knob (name + default) and its calibratable state. Authored
+         *     teaching prose stays in the frontend and joins by `method` key.
+         */
+        MethodReference: {
+            /** Method */
+            method: string;
+            /**
+             * Types
+             * @default []
+             */
+            types: string[];
+            /** Threshold */
+            threshold?: string | null;
+            /** Default */
+            default?: number | null;
+            /**
+             * Calibratable
+             * @default false
+             */
+            calibratable: boolean;
+            /** State */
+            state: string;
+            /**
+             * Bandit Arm
+             * @default false
+             */
+            bandit_arm: boolean;
+        };
+        /** MethodsResponse */
+        MethodsResponse: {
+            /** Methods */
+            methods: components["schemas"]["MethodReference"][];
+        };
+        /** MitreTechnique */
+        MitreTechnique: {
+            /**
+             * Id
+             * @default
+             */
+            id: string;
+            /**
+             * Name
+             * @default
+             */
+            name: string;
+            /**
+             * Tactic
+             * @default
+             */
+            tactic: string;
         };
         /**
          * PipelineRunRequest
@@ -1038,6 +1355,50 @@ export interface components {
             held_events: number;
             /** Released At */
             released_at?: string | null;
+        };
+        /** RLStateResponse */
+        RLStateResponse: {
+            /** Thresholds */
+            thresholds: {
+                [key: string]: components["schemas"]["ThresholdState"];
+            };
+            /** Effectiveness */
+            effectiveness: {
+                [key: string]: components["schemas"]["BanditState"];
+            };
+            /**
+             * Feedback Labels
+             * @default 0
+             */
+            feedback_labels: number;
+            /**
+             * Min Labels
+             * @default 30
+             */
+            min_labels: number;
+        };
+        /** ReportClaim */
+        ReportClaim: {
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Evidence
+             * @default []
+             */
+            evidence: components["schemas"]["EvidenceRef"][];
+        };
+        /** ReportTechnique */
+        ReportTechnique: {
+            /** Id */
+            id: string;
+            /**
+             * Known
+             * @default false
+             */
+            known: boolean;
         };
         /**
          * RunAnomalySummary
@@ -1287,6 +1648,114 @@ export interface components {
              * @default 50
              */
             log_count: number;
+        };
+        /**
+         * SupervisorReport
+         * @description Structured per-incident supervisor report (Phase 3, R-1).
+         */
+        SupervisorReport: {
+            /** Entity */
+            entity: string;
+            /** Summary */
+            summary: string;
+            /** Severity */
+            severity: string;
+            /**
+             * Entities
+             * @default []
+             */
+            entities: string[];
+            /**
+             * Attack Techniques
+             * @default []
+             */
+            attack_techniques: components["schemas"]["ReportTechnique"][];
+            /**
+             * Recommended Actions
+             * @default []
+             */
+            recommended_actions: string[];
+            /**
+             * Claims
+             * @default []
+             */
+            claims: components["schemas"]["ReportClaim"][];
+        };
+        /** SupervisorReportMeta */
+        SupervisorReportMeta: {
+            /**
+             * Invalid Elements
+             * @default 0
+             */
+            invalid_elements: number;
+            /** Parse Error */
+            parse_error?: string | null;
+            /** Reason */
+            reason?: string | null;
+        };
+        /**
+         * ThresholdState
+         * @description One threshold with its honest calibration state (L6, mockup 03).
+         *
+         *     state:
+         *       calibratable    — a method with a comparable raw_score feeds it and
+         *                         label evidence has reached min_labels
+         *       held            — calibratable, but labels are still below
+         *                         min_labels; accumulating
+         *       not_calibratable — no method emits a score in this knob's units;
+         *                         tuning it would be theater
+         */
+        ThresholdState: {
+            /** Name */
+            name: string;
+            /** Current */
+            current: number;
+            /** Default */
+            default: number;
+            /**
+             * Changed
+             * @default false
+             */
+            changed: boolean;
+            /**
+             * Pinned
+             * @default false
+             */
+            pinned: boolean;
+            /**
+             * State
+             * @default not_calibratable
+             */
+            state: string;
+            /** Evidence */
+            evidence?: string | null;
+            /**
+             * Label Count
+             * @default 0
+             */
+            label_count: number;
+            /**
+             * Tp Count
+             * @default 0
+             */
+            tp_count: number;
+            /**
+             * Fp Count
+             * @default 0
+             */
+            fp_count: number;
+            /**
+             * Min Labels
+             * @default 30
+             */
+            min_labels: number;
+            /**
+             * Methods
+             * @default []
+             */
+            methods: string[];
+            /** Reason */
+            reason?: string | null;
         };
         /**
          * TimelineEvent
@@ -1864,7 +2333,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["IncidentListResponse"];
                 };
             };
             /** @description Validation Error */
@@ -1915,7 +2384,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["IncidentResponse"];
                 };
             };
             /** @description Validation Error */
@@ -1951,6 +2420,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    chat_history_api_chat_history_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                before?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatHistoryResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2236,6 +2737,26 @@ export interface operations {
             };
         };
     };
+    get_methods_api_system_methods_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MethodsResponse"];
+                };
+            };
+        };
+    };
     get_rl_state_api_system_rl_get: {
         parameters: {
             query?: never;
@@ -2251,7 +2772,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["RLStateResponse"];
                 };
             };
         };

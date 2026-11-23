@@ -134,6 +134,21 @@ def _extract_tool_names(anomalies: list[dict]) -> list[str]:
     return names
 
 
+def _anomaly_ids(events: list) -> list[str]:
+    """FR-3: deduped anomaly_ids from source anomalies, Nones dropped.
+
+    The threat_findings block must carry the IDs the structured
+    narrative is asked to cite — the model cannot cite IDs it cannot
+    see, and the D-10 evidence resolver is unbuildable without them.
+    """
+    seen: list[str] = []
+    for e in events:
+        aid = e.get("anomaly_id") if isinstance(e, dict) else None
+        if aid and aid not in seen:
+            seen.append(aid)
+    return seen
+
+
 # ---------------------------------------------------------------------------
 # Parsers — extract structured data from shared block text
 # ---------------------------------------------------------------------------
@@ -379,6 +394,7 @@ def correlate_anomalies(
                 "entity_type": "ip",
                 "log_types": sorted(log_types),
                 "anomaly_types": sorted(anomaly_types),
+                "anomaly_ids": _anomaly_ids(anomalous),
                 "total_events": len(events),
                 "anomalous_events": len(anomalous),
                 "severity": "critical" if len(log_types) >= 3 else "high",
@@ -413,6 +429,7 @@ def correlate_anomalies(
                 "entity_type": "user",
                 "log_types": sorted(log_types),
                 "anomaly_types": sorted(anomaly_types),
+                "anomaly_ids": _anomaly_ids(anomalous),
                 "total_events": len(events),
                 "anomalous_events": len(anomalous),
                 "severity": "critical" if has_cross_type and len(log_types) >= 3 or has_critical else "high",
@@ -450,6 +467,7 @@ def correlate_anomalies(
             "entity": process,
             "entity_type": "process",
             "anomaly_types": sorted(anomaly_types),
+            "anomaly_ids": _anomaly_ids(events),
             "total_events": len(events),
             "anomalous_events": len(events),
             "severity": (
@@ -507,6 +525,7 @@ def correlate_anomalies(
                         corr = {
                             "entity": ip,
                             "entity_type": "ip_time_window",
+                            "anomaly_ids": _anomaly_ids([e for _, e in cluster]),
                             "log_types": sorted(cluster_types),
                             "time_window": f"{cluster[0][0].isoformat()} to {cluster[-1][0].isoformat()}",
                             "event_count": len(cluster),
@@ -684,6 +703,7 @@ def assess_findings(
             "type": ", ".join(sorted(anomaly_types)),
             "entity": corr["entity"],
             "entity_type": corr["entity_type"],
+            "anomaly_ids": list(corr.get("anomaly_ids") or []),
             "cross_type": cross_type,
             "log_types": sorted(log_types),
             "confidence": min(0.5 + anomalous_count * 0.1, 1.0),
@@ -768,11 +788,21 @@ def format_findings(findings: list[dict], entity_profiles=None) -> str:
                 f" [Tools: {', '.join(f['tools_detected'])}]"
             )
 
+        # FR-3: anomaly IDs — the evidence contract. The model cites
+        # these in claims[]; the D-10 resolver checks them against
+        # stored anomalies. Capped to keep the block's token budget.
+        ids = f.get("anomaly_ids") or []
+        ids_str = ""
+        if ids:
+            shown = ", ".join(ids[:8])
+            more = f" (+{len(ids) - 8} more)" if len(ids) > 8 else ""
+            ids_str = f" [anomaly_ids: {shown}{more}]"
+
         lines.append(
             (
                 f"\n[{f['severity'].upper()}] {f['type']} "
                 f"by {f['entity_type']} {f['entity']}"
-                f"{cross}{attack_str}{tools_str}{graph_str}"
+                f"{cross}{attack_str}{tools_str}{graph_str}{ids_str}"
                 f"{_baseline_clause(f['entity'])} "
                 f"(confidence: {f['confidence']:.0%})"
             )

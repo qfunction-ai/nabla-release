@@ -1,10 +1,14 @@
 import { useState, useRef, useEffect } from 'react';
-import { API_URL } from '../lib/api';
+import { API_URL, apiFetch } from '../lib/api';
+import type { components } from '../types/api';
 
 interface ChatMsg {
   role: 'user' | 'assistant' | 'reasoning';
   content: string;
 }
+
+// Generated from the Pydantic response model (B1 — Phase 5)
+type ChatHistoryResponse = components['schemas']['ChatHistoryResponse'];
 
 export default function Chat() {
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -13,6 +17,22 @@ export default function Chat() {
   const [includeReasoning, setIncludeReasoning] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // B1: load the persisted transcript on page open — the conversation
+  // survives refresh. Nabla-owned store (never Letta's message list).
+  useEffect(() => {
+    apiFetch<ChatHistoryResponse>('/api/chat/history?limit=200')
+      .then((data) => {
+        const restored: ChatMsg[] = [];
+        for (const turn of [...data.turns].reverse()) { // oldest first
+          if (turn.reasoning) restored.push({ role: 'reasoning', content: turn.reasoning });
+          restored.push({ role: 'user', content: turn.message });
+          restored.push({ role: 'assistant', content: turn.answer });
+        }
+        if (restored.length > 0) setMessages(restored);
+      })
+      .catch(() => {}); // history is best-effort — chat works without it
+  }, []);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });

@@ -16,16 +16,17 @@ def _write_incidents(temp_data_dir, incidents):
 
 SAMPLE_INCIDENT = {
     "incident_id": "abc12345-6789-abcd-ef01-234567890abc",
+    "run_id": "run-20261123-0001",
     "entity": "alice",
     "finding_type": "brute_force",
     "severity": "high",
     "status": "new",
     "confidence": 0.85,
-    "mitre_techniques": ["T1110"],
+    "mitre_attack": [{"id": "T1110", "name": "Brute Force", "tactic": "Credential Access"}],
     "evidence": "Multiple failed login attempts",
     "created_at": datetime.now(timezone.utc).isoformat(),
     "updated_at": datetime.now(timezone.utc).isoformat(),
-    "notes": [],
+    "operator_notes": "",
 }
 
 

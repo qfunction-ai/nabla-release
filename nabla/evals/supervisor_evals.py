@@ -31,6 +31,15 @@ from nabla.evals.framework import (
     Suite,
 )
 from nabla.log import get_logger
+from nabla.pipeline.structured_report import build_structured_prompt
+
+_BASELINE_PHASE_NOTE = (
+    " NOTE: The system is currently in BASELINE phase. "
+    "Only signature-based detection methods are active. "
+    "These findings are based on known attack patterns, "
+    "not statistical deviation. Read the system_phase "
+    "block for details on which methods are active/suppressed."
+)
 
 logger = get_logger("evals.supervisor")
 
@@ -91,7 +100,9 @@ Severity: HIGH
 Entity: admin_svc (user)
 Detection: brute_force_attempt (9 failed logins in 12 minutes, threshold: 5)
 MITRE ATT&CK: T1110.001 (Password Guessing)
+[anomaly_ids: e1f2a3b4c5d6f7a8]
 Evidence: 9 auth failures from 10.0.1.50 to DC01 within 12 minutes
+[anomaly_ids: e1f2a3b4c5d6f7a8]
 Counterfactuals: If auth failure count were 5 or fewer, this finding would not trigger
 Graph context: admin_svc is flagged in provenance community 3 (high anomaly density)
 """
@@ -103,6 +114,7 @@ Severity: HIGH
 Entity: admin_svc (user)
 Detection: brute_force_attempt (9 failed logins in 12 minutes)
 MITRE ATT&CK: T1110.001
+[anomaly_ids: aabb001122334455]
 
 Finding 2: LOLBIN Execution — certutil
 Severity: HIGH
@@ -110,6 +122,7 @@ Entity: WORKSTATION-04 (host)
 Detection: lolbin_abuse (certutil.exe with download flags)
 MITRE ATT&CK: T1105 (Ingress Tool Transfer)
 Tools: certutil
+[anomaly_ids: bbcc112233445566]
 
 Finding 3: Network Exfiltration to Cloud Storage
 Severity: CRITICAL
@@ -117,6 +130,7 @@ Entity: admin_svc (user)
 Detection: exfil_destination (cloud storage: drive.google.com on port 443)
 MITRE ATT&CK: T1567.002 (Exfiltration to Cloud Storage)
 Evidence: 2.3 GB transferred to drive.google.com in 45 minutes
+[anomaly_ids: ccdd223344556677]
 """
 
 _FINDINGS_BASELINE = """Confirmed threats: 1
@@ -127,6 +141,7 @@ Entity: DEV-WIN10 (host)
 Detection: lolbin_abuse (powershell.exe -enc with encoded command)
 MITRE ATT&CK: T1059.001 (PowerShell)
 Evidence: Encoded PowerShell command executing from cmd.exe
+[anomaly_ids: ddee334455667788]
 Note: This is the only active finding during BASELINE phase.
 """
 
@@ -155,11 +170,7 @@ def build_acknowledgment_scenario() -> Scenario:
         .interact(
             inputs="The threat_findings block contains 3 confirmed threat(s). Read the threat_findings block carefully. For each finding: assess whether it is a true positive or false positive, connect related findings into coherent attack narratives, and generate a concise report.",
             outputs_fn=lambda _: call_supervisor(
-                "The threat_findings block contains 3 confirmed threat(s). "
-                "Read the threat_findings block carefully. For each finding: "
-                "assess whether it is a true positive or false positive, "
-                "connect related findings into coherent attack narratives, "
-                "and generate a concise report."
+                build_structured_prompt(3, "", "")
             ),
         )
         .check(
@@ -194,10 +205,7 @@ def build_contradiction_scenario() -> Scenario:
         .interact(
             inputs="The threat_findings block contains 1 confirmed threat(s). Read the threat_findings block carefully.",
             outputs_fn=lambda _: call_supervisor(
-                "The threat_findings block contains 1 confirmed threat(s). "
-                "Read the threat_findings block carefully. For each finding: "
-                "assess whether it is a true positive or false positive, "
-                "and generate a concise report."
+                build_structured_prompt(1, "", "")
             ),
         )
         .check(
@@ -249,12 +257,7 @@ def build_fp_reasoning_scenario() -> Scenario:
         .interact(
             inputs="The threat_findings block contains 3 confirmed threat(s). Read the threat_findings block carefully.",
             outputs_fn=lambda _: call_supervisor(
-                "The threat_findings block contains 3 confirmed threat(s). "
-                "Read the threat_findings block carefully. For each finding: "
-                "assess whether it is a true positive or false positive, "
-                "connect related findings into coherent attack narratives, "
-                "and generate a concise report. If you mark any finding as "
-                "a false positive, you MUST explain why based on the evidence."
+                build_structured_prompt(3, "", "")
             ),
         )
         .check(
@@ -295,13 +298,7 @@ def build_phase_awareness_scenario() -> Scenario:
         .interact(
             inputs="The threat_findings block contains 1 confirmed threat(s). Read the threat_findings block carefully. NOTE: The system is currently in BASELINE phase.",
             outputs_fn=lambda _: call_supervisor(
-                "The threat_findings block contains 1 confirmed threat(s). "
-                "Read the threat_findings block carefully. For each finding: "
-                "assess whether it is a true positive or false positive, "
-                "and generate a concise report. "
-                "NOTE: The system is currently in BASELINE phase. "
-                "Only signature-based detection methods are active. "
-                "Statistical methods are intentionally suppressed."
+                build_structured_prompt(1, _BASELINE_PHASE_NOTE, "")
             ),
         )
         .check(
@@ -356,11 +353,7 @@ def build_narrative_coherence_scenario() -> Scenario:
         .interact(
             inputs="The threat_findings block contains 3 confirmed threat(s). Read the threat_findings block carefully.",
             outputs_fn=lambda _: call_supervisor(
-                "The threat_findings block contains 3 confirmed threat(s). "
-                "Read the threat_findings block carefully. For each finding: "
-                "assess whether it is a true positive or false positive, "
-                "connect related findings into coherent attack narratives, "
-                "and generate a concise report."
+                build_structured_prompt(3, "", "")
             ),
         )
         .check(

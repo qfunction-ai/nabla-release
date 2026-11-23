@@ -1,23 +1,14 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
+import type { components } from '../types/api';
 
-interface Incident {
-  incident_id: string;
-  entity: string;
-  entity_type?: string;
-  run_id?: string;
-  finding_type: string;
-  severity: string;
-  status: string;
-  confidence: number;
-  mitre_techniques: string[];
-  description: string;
-  evidence: string;
-  created_at: string;
-  updated_at: string;
-  notes: string[];
-}
+// Generated from the Pydantic response models (FR-4) — the hand-copied
+// interface this replaces had two drifted fields that never rendered:
+// mitre_techniques (real field: mitre_attack, list of dicts) and
+// notes: string[] (real field: operator_notes, string). Same disease
+// as duration_ms — killed by construction now.
+type Incident = components['schemas']['IncidentResponse'];
 
 export default function Incidents() {
   const [incidents, setIncidents] = useState<Incident[]>([]);
@@ -261,17 +252,24 @@ export default function Incidents() {
                     </div>
                   )}
                 </div>
-                {detail.mitre_techniques && detail.mitre_techniques.length > 0 && (
+                {detail.mitre_attack && detail.mitre_attack.length > 0 && (
                   <div className="entity-field" style={{ marginBottom: 0 }}>
                     <div className="field-label">MITRE ATT&CK</div>
                     <div className="tag-list">
-                      {detail.mitre_techniques.map((t) => (
-                        <span className="tag" key={t} style={{ borderColor: 'var(--danger-border)', color: 'var(--danger)' }}>{t}</span>
+                      {detail.mitre_attack.map((t, i) => (
+                        <span className="tag" key={t.id || i} style={{ borderColor: 'var(--danger-border)', color: 'var(--danger)' }} title={t.name || t.tactic || ''}>
+                          {t.id}{t.name ? ` · ${t.name}` : ''}
+                        </span>
                       ))}
                     </div>
                   </div>
                 )}
               </div>
+
+              {/* Structured supervisor analysis (Phase 3, R-1) — per-incident,
+                  per-element validated, evidence resolved server-side (D-10).
+                  Plain text only (R-2): no markdown is ever rendered. */}
+              <SupervisorReportCard detail={detail} />
 
               {/* Evidence — expandable, human-readable layer + raw JSON (UI-3) */}
               {detail.evidence && <EvidenceCard evidence={detail.evidence} />}
@@ -296,9 +294,9 @@ export default function Incidents() {
               {/* Notes */}
               <div className="card">
                 <div className="section-title" data-symbol="∇">NOTES</div>
-                {detail.notes && detail.notes.length > 0 && (
+                {detail.operator_notes && detail.operator_notes.trim().length > 0 && (
                   <ul className="inline-list" style={{ marginBottom: 12 }}>
-                    {detail.notes.map((note, i) => (
+                    {detail.operator_notes.split('\n').filter((n) => n.trim()).map((note, i) => (
                       <li key={i}>{note}</li>
                     ))}
                   </ul>
@@ -332,6 +330,147 @@ export default function Incidents() {
  * Evidence display (UI-3): collapsed by default; human-readable layer
  * above the raw JSON; counterfactuals phrased in plain language.
  */
+/**
+ * Structured supervisor analysis (Phase 3, R-1). The supervisor emits a
+ * per-incident JSON report; every element validated independently
+ * (FR-1) and every evidence ref resolved server-side (D-10) — the UI
+ * renders what the resolver verified, never re-derives it.
+ *
+ * R-2: plain text only. No markdown is rendered anywhere — the
+ * injection clip quotes attacker command lines; a markdown renderer
+ * would be a stored-XSS path.
+ */
+function SupervisorReportCard({ detail }: { detail: Incident }) {
+  const report = detail.supervisor_report;
+  const status = detail.review_status;
+
+  // Legacy incidents predate the structured path — render nothing.
+  if (status === undefined || status === null) return null;
+
+  if (status !== 'ok' || !report) {
+    const reason =
+      status === 'invalid'
+        ? detail.supervisor_report_meta?.reason
+          ? `The supervisor output failed validation (${detail.supervisor_report_meta.reason}).`
+          : 'The supervisor output failed validation.'
+        : 'No supervisor analysis was generated for this incident.';
+    return (
+      <div className="card" style={{ marginBottom: 16, borderTop: '2px solid var(--warning)' }}>
+        <div className="section-title" data-symbol="∇">SUPERVISOR ANALYSIS</div>
+        <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+          <span className="tag" style={{ borderColor: 'var(--warning-border)', color: 'var(--warning)' }}>
+            {status === 'invalid' ? 'REPORT INVALID' : 'NO REPORT'}
+          </span>{' '}
+          {reason} The deterministic description above is the authoritative summary.
+        </div>
+      </div>
+    );
+  }
+
+  const sevColor =
+    report.severity === 'critical' ? 'var(--danger)' :
+    report.severity === 'high' ? 'var(--warning)' :
+    report.severity === 'medium' ? 'var(--purple)' : 'var(--success)';
+
+  return (
+    <div className="card" style={{ marginBottom: 16, borderTop: `2px solid ${sevColor}` }}>
+      <div className="section-title" data-symbol="∇">SUPERVISOR ANALYSIS</div>
+
+      {/* Summary — plain text, never markdown (R-2) */}
+      <div style={{ fontSize: 13, color: 'var(--text-primary)', lineHeight: 1.6, whiteSpace: 'pre-wrap', marginBottom: 12 }}>
+        {report.summary}
+      </div>
+
+      {/* Entities + severity */}
+      <div className="chip-row" style={{ marginBottom: 12 }}>
+        <span className="tag" style={{ borderColor: sevColor, color: sevColor }}>
+          {report.severity.toUpperCase()}
+        </span>
+        {report.entities.map((e) => (
+          <span className="tag" key={e}>{e}</span>
+        ))}
+      </div>
+
+      {/* ATT&CK — unknown IDs flagged, never dropped */}
+      {report.attack_techniques.length > 0 && (
+        <div className="entity-field" style={{ marginBottom: 12 }}>
+          <div className="field-label">ATT&CK TECHNIQUES (SUPERVISOR)</div>
+          <div className="tag-list">
+            {report.attack_techniques.map((t) => (
+              <span
+                className="tag"
+                key={t.id}
+                title={t.known ? 'Verified against the ATT&CK STIX bundle' : 'NOT in the ATT&CK bundle — flagged, not dropped'}
+                style={t.known
+                  ? { borderColor: 'var(--danger-border)', color: 'var(--danger)' }
+                  : { borderColor: 'var(--warning-border)', color: 'var(--warning)', opacity: 0.9 }}
+              >
+                {t.id}{t.known ? '' : ' · UNVERIFIED'}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommended actions */}
+      {report.recommended_actions.length > 0 && (
+        <div className="entity-field" style={{ marginBottom: 12 }}>
+          <div className="field-label">RECOMMENDED ACTIONS</div>
+          <ul className="inline-list">
+            {report.recommended_actions.map((a, i) => (
+              <li key={i}>{a}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* Claims with resolved evidence — every claim traces (D-10) */}
+      {report.claims.length > 0 && (
+        <div className="entity-field">
+          <div className="field-label">CLAIMS — EVERY CLAIM TRACES TO STORED EVIDENCE</div>
+          {report.claims.map((claim, i) => (
+            <div key={i} style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 12, color: 'var(--text-primary)' }}>{claim.text}</div>
+              <div className="chip-row" style={{ marginTop: 4 }}>
+                {claim.evidence.map((ev, j) => (
+                  ev.resolved ? (
+                    <span
+                      className="tag"
+                      key={j}
+                      title={`${ev.kind}: ${ev.ref}${ev.raw_score !== null && ev.raw_score !== undefined ? ` · raw ${ev.raw_score}` : ''}${ev.threshold_in_effect !== null && ev.threshold_in_effect !== undefined ? ` / thr ${ev.threshold_in_effect}` : ''}`}
+                    >
+                      {ev.method ? `${ev.method} · ${ev.ref.slice(0, 8)}` : `${ev.kind} · ${ev.ref.slice(0, 12)}`}
+                      {ev.raw_score !== null && ev.raw_score !== undefined && (
+                        <span style={{ color: 'var(--text-tertiary)' }}> raw {ev.raw_score}{ev.threshold_in_effect !== null && ev.threshold_in_effect !== undefined ? ` / thr ${ev.threshold_in_effect}` : ''}</span>
+                      )}
+                    </span>
+                  ) : (
+                    <span
+                      className="tag"
+                      key={j}
+                      title="Unresolved — this reference does not match stored anomalies, events, or entities"
+                      style={{ borderColor: 'var(--warning-border)', color: 'var(--warning)' }}
+                    >
+                      UNRESOLVED · {ev.ref.slice(0, 12)}
+                    </span>
+                  )
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Per-element validation honesty: neighbors of malformed elements survive */}
+      {detail.supervisor_report_meta && detail.supervisor_report_meta.invalid_elements > 0 && (
+        <div style={{ marginTop: 10, paddingTop: 8, borderTop: '1px solid var(--border)', fontSize: 11, color: 'var(--text-tertiary)' }}>
+          {detail.supervisor_report_meta.invalid_elements} malformed report element(s) were excluded; this report is the validated remainder.
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EvidenceCard({ evidence }: { evidence: string }) {
   const [expanded, setExpanded] = useState(false);
   const [showRaw, setShowRaw] = useState(false);
